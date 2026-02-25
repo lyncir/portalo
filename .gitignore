@@ -1,0 +1,24 @@
+# Rust build artifacts
+target/
+crates/**/target
+
+# Cargo
+Cargo.lock
+.cargo/config
+.cargo/config.toml
+
+
+# IDE files
+.idea
+.vscode
+
+# Bevy Assets
+assets/**/*.meta
+
+
+# Other
+android_src/app/src/main/jniLibs
+android_src/.gradle
+android_src/app/.cxx/
+android_src/app/build/
+android_src/.zcache/
