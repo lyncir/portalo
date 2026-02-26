@@ -1,79 +1,91 @@
 use bevy::prelude::*;
-use mdns_sd::{ServiceDaemon, ServiceInfo};
-use std::net::IpAddr;
-use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use mdns_sd::ServiceInfo;
 
 mod discovery;
-mod service;
 
-use discovery::ServiceDiscoveryPlugin;
-use service::ServicePublisher;
+use discovery::{MdnsManager, ServiceDiscoveryPlugin};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        // ✅ 添加服务发现插件
         .add_plugins(ServiceDiscoveryPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, (publish_service, discover_services))
+        .add_systems(Update, (publish_service, list_interfaces))
         .run();
 }
 
-#[derive(Resource)]
-struct ServiceState {
-    published_services: Vec<String>,
+fn setup() {
+    info!("🚀 Portalo (Dukto Remake) Ready");
+    println!("Controls: [P] Publish Service | [L] List Interfaces");
 }
 
-fn setup(mut commands: Commands) {
-    commands.insert_resource(ServiceState {
-        published_services: Vec::new(),
-    });
-
-    info!("🚀 Service Discovery initialized");
-}
-
-fn publish_service(mut state: ResMut<ServiceState>, keyboard: Res<ButtonInput<KeyCode>>) {
+// 发布服务
+fn publish_service(keyboard: Res<ButtonInput<KeyCode>>, mdns_res: Res<MdnsManager>) {
     if keyboard.just_pressed(KeyCode::KeyP) {
-        let publisher = ServicePublisher::new("MyGameService", "_game._tcp.local.", 5353)
-            .add_property("version".to_string(), "1.0".to_string())
-            .add_property("platform".to_string(), "bevy".to_string());
+        let service_type = "_game._tcp.local.";
+        let instance_name = "my_instance";
+        let ip = "10.6.31.50";
+        let hostname = format!("{}.local.", ip);
+        let port = 5353;
+        let properties = [("property_1", "test"), ("property_2", "1234")];
 
-        match publisher.publish() {
-            Ok(service_name) => {
-                state.published_services.push(service_name.clone());
-                info!("✅ Published service: {}", service_name);
-            }
-            Err(e) => {
-                error!("❌ Failed to publish service: {}", e);
-            }
-        }
+        let my_service = ServiceInfo::new(
+            service_type,
+            instance_name,
+            &hostname,
+            ip,
+            port,
+            &properties[..],
+        )
+        .unwrap();
+
+        mdns_res
+            .daemon
+            .register(my_service)
+            .expect("Failed to register our service");
     }
 }
 
-fn discover_services(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    discovered: Res<discovery::DiscoveredServices>,
-) {
-    if keyboard.just_pressed(KeyCode::KeyD) {
-        info!("📋 Current discovered services:");
-        for service in &discovered.services {
-            info!(
-                "  - {} at {}:{}",
-                service.name,
-                service.addresses.join(", "),
-                service.port
-            );
+// 列出所有的网卡
+fn list_interfaces(keyboard: Res<ButtonInput<KeyCode>>) {
+    if keyboard.just_pressed(KeyCode::KeyL) {
+        use pnet::datalink;
 
-            if !service.properties.is_empty() {
-                for (key, value) in &service.properties {
-                    info!("    - {}: {}", key, value);
+        println!("\n{}", "=".repeat(70));
+        println!("📡 Available Network Interfaces:");
+        println!("{}", "=".repeat(70));
+
+        let interfaces = datalink::interfaces();
+        if interfaces.is_empty() {
+            println!("  No network interfaces found");
+        } else {
+            for (idx, iface) in interfaces.iter().enumerate() {
+                println!("\n{}. {}", idx + 1, iface.name);
+                println!(
+                    "   Status: {}",
+                    if iface.is_up() {
+                        "🟢 UP"
+                    } else {
+                        "🔴 DOWN"
+                    }
+                );
+                println!(
+                    "   Loopback: {}",
+                    if iface.is_loopback() { "Yes" } else { "No" }
+                );
+
+                if !iface.ips.is_empty() {
+                    println!("   IP Addresses:");
+                    for ip in &iface.ips {
+                        println!("     • {} (/{}/)", ip.ip(), ip.prefix());
+                    }
+                }
+
+                if let Some(mac) = iface.mac {
+                    println!("   MAC: {}", mac);
                 }
             }
         }
-
-        if discovered.services.is_empty() {
-            info!("  No services discovered yet");
-        }
+        println!("\n{}\n", "=".repeat(70));
     }
 }
