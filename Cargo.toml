@@ -6,11 +6,56 @@ edition = "2024"
 
 [dependencies]
 mdns-sd = "0.18.0"
-pnet = "0.35"
+local-ip-address = "0.6.10"
 
 [dependencies.bevy]
 version = "0.18.0"
 default-features = false
 features = [
-	"ui",
+	"bevy_ui",          # 界面必需
+    "bevy_render",      # 渲染基础
+    "bevy_core_pipeline",# 2D 摄像机
+    "bevy_text",        # 文字显示
+    "bevy_winit",       # 窗口管理
+    "bevy_asset",       # 字体加载
+    "x11",              # Linux 兼容
+    "tonemapping_luts", # 0.18 UI 渲染必需
+    "default_font",     # 如果不自备字体就开启，自备则关闭
+	"zstd_rust",
+	"bevy_log",
 ]
+
+
+[profile.release]
+# 以编译时间为代码，在发布模式中启用更多优化
+# 优化时要考虑尺寸(也可尝试"z",有时会更好)
+opt-level = "z"
+
+# strip
+#
+# "none":
+# "debuginfo": 删除调试信息
+# "symbols": 删除更多调试信息
+# 默认值为 "none"
+
+# 从二进制文件中删除所有调试信息以稍微减小文件大小。
+strip = "debuginfo"
+
+# lto
+#
+# "false":
+# "fat": 尝试对依赖关系图中的所有 crate 执行优化
+# "thin": 类似"fat",但运行所需的时间要少得多，同时仍能实现类似于"fat"的性能提升。
+# "off": 禁用lto
+
+# 编译时间变慢，提升微乎其微
+lto = "thin"
+
+# codegen-units
+# 
+# 大于0的整数: 控制 crate 将拆分为多少个“代码生成单元”
+# 更多的代码生成单元允许并行处理更多的 crate，可能会减少编译时间，但可能会产生更慢的代码。
+
+# 将整个crate作为为一个单元进行编译(默认并行编译)
+# 编译时间变慢，提升微乎其微
+codegen-units = 1

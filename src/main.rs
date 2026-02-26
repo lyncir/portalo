@@ -1,5 +1,7 @@
 use bevy::prelude::*;
+use local_ip_address::list_afinet_netifas;
 use mdns_sd::ServiceInfo;
+use std::net::IpAddr;
 
 mod discovery;
 
@@ -24,7 +26,7 @@ fn publish_service(keyboard: Res<ButtonInput<KeyCode>>, mdns_res: Res<MdnsManage
     if keyboard.just_pressed(KeyCode::KeyP) {
         let service_type = "_game._tcp.local.";
         let instance_name = "my_instance";
-        let ip = "10.6.31.50";
+        let ip = "192.168.56.1";
         let hostname = format!("{}.local.", ip);
         let port = 5353;
         let properties = [("property_1", "test"), ("property_2", "1234")];
@@ -46,46 +48,19 @@ fn publish_service(keyboard: Res<ButtonInput<KeyCode>>, mdns_res: Res<MdnsManage
     }
 }
 
-// 列出所有的网卡
+// 列出可用的ip
 fn list_interfaces(keyboard: Res<ButtonInput<KeyCode>>) {
     if keyboard.just_pressed(KeyCode::KeyL) {
-        use pnet::datalink;
-
         println!("\n{}", "=".repeat(70));
         println!("📡 Available Network Interfaces:");
         println!("{}", "=".repeat(70));
 
-        let interfaces = datalink::interfaces();
-        if interfaces.is_empty() {
-            println!("  No network interfaces found");
-        } else {
-            for (idx, iface) in interfaces.iter().enumerate() {
-                println!("\n{}. {}", idx + 1, iface.name);
-                println!(
-                    "   Status: {}",
-                    if iface.is_up() {
-                        "🟢 UP"
-                    } else {
-                        "🔴 DOWN"
-                    }
-                );
-                println!(
-                    "   Loopback: {}",
-                    if iface.is_loopback() { "Yes" } else { "No" }
-                );
+        let network_interfaces = list_afinet_netifas().unwrap();
 
-                if !iface.ips.is_empty() {
-                    println!("   IP Addresses:");
-                    for ip in &iface.ips {
-                        println!("     • {} (/{}/)", ip.ip(), ip.prefix());
-                    }
-                }
-
-                if let Some(mac) = iface.mac {
-                    println!("   MAC: {}", mac);
-                }
+        for (name, ipaddr) in network_interfaces.iter() {
+            if matches!(ipaddr, IpAddr::V4(_)) {
+                println!("{}\t{}", name, ipaddr);
             }
         }
-        println!("\n{}\n", "=".repeat(70));
     }
 }
