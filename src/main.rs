@@ -1,17 +1,23 @@
 use bevy::app::AppExit;
 use bevy::prelude::*;
+use bevy::tasks::IoTaskPool;
 use gethostname::gethostname;
 use local_ip_address::list_afinet_netifas;
 use mdns_sd::ServiceInfo;
 
 mod discovery;
+mod file_receiver;
+mod file_send;
+mod network;
 
 use discovery::{MdnsManager, PeerList, ServiceDiscoveryPlugin};
+use network::{NetworkPlugin, TokioRuntime};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(ServiceDiscoveryPlugin)
+        .add_plugins(NetworkPlugin)
         .add_systems(
             Startup,
             (
@@ -119,7 +125,11 @@ fn auto_publish_service(mdns_res: Res<MdnsManager>, device_metadata: Res<DeviceM
 }
 
 // 列出已发现的服务
-fn list_interfaces(keyboard: Res<ButtonInput<KeyCode>>, peer_list: Res<PeerList>) {
+fn list_interfaces(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    peer_list: Res<PeerList>,
+    runtime: Res<TokioRuntime>,
+) {
     if keyboard.just_pressed(KeyCode::KeyL) {
         println!("\n{}", "=".repeat(70));
         println!("📋 Discovered Services (Total: {})", peer_list.peers.len());
@@ -135,6 +145,18 @@ fn list_interfaces(keyboard: Res<ButtonInput<KeyCode>>, peer_list: Res<PeerList>
             }
         }
         println!("\n{}\n", "=".repeat(70));
+
+        // 发送文件
+        let dest = format!("{}:49527", "192.168.56.133");
+        let path = "/tmp/1.txt";
+
+        let handle = runtime.0.handle().clone();
+        handle.spawn(async move {
+            info!("🚀 Starting transfer to {}...", dest);
+            if let Err(e) = file_send::send_file_fast(dest, path.to_string()).await {
+                error!("❌ Transfer failed: {}", e);
+            }
+        });
     }
 }
 
