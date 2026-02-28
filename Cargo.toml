@@ -13,17 +13,7 @@ gethostname = "1.1.0"
 version = "0.18.0"
 default-features = false
 features = [
-	"bevy_ui",          # 界面必需
-    "bevy_render",      # 渲染基础
-    "bevy_core_pipeline",# 2D 摄像机
-    "bevy_text",        # 文字显示
-    "bevy_winit",       # 窗口管理
-    "bevy_asset",       # 字体加载
-    "x11",              # Linux 兼容
-    "tonemapping_luts", # 0.18 UI 渲染必需
-    "default_font",     # 如果不自备字体就开启，自备则关闭
-	"zstd_rust",
-	"bevy_log",
+	"ui",
 ]
 
 

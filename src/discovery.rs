@@ -10,7 +10,7 @@ impl Plugin for ServiceDiscoveryPlugin {
         // 初始化空的设备列表
         app.init_resource::<PeerList>()
             // 仅仅添加监听系统，初始化系统由 main 控制顺序
-            .add_systems(Update, listen_for_services);
+            .add_systems(Update, (listen_for_services,));
     }
 }
 
@@ -65,12 +65,31 @@ fn listen_for_services(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, 
                     os,
                     last_seen: time.elapsed_secs_f64(),
                 };
-                peer_list.peers.insert(hostname, peer);
+                let name = hostname.replace(".local.", "");
+                peer_list.peers.insert(name, peer);
             }
             // 断开
             ServiceEvent::ServiceRemoved(service_type, fullname) => {
                 info!("❌ Service removed: {} (type: {})", fullname, service_type);
-                // TODO: 从 PeerList 中 remove(fullname)
+
+                // 逻辑：fullname 通常是 "portalo-hostname-eth0._portalo._tcp.local."
+                // 我们需要提取出 hostname 部分，使其与插入时的 Key 匹配
+                if let Some(instance_part) = fullname.split('.').next() {
+                    // 去掉 "portalo-" 前缀
+                    let raw_name = instance_part
+                        .strip_prefix("portalo-")
+                        .unwrap_or(instance_part);
+
+                    // 进一步去掉后缀网卡名（如果有的话，比如 "-eth0"）
+                    // 这里的逻辑要和你插入时的 Key 生成逻辑对齐
+                    if let Some((name, _interface)) = raw_name.rsplit_once('-') {
+                        peer_list.peers.remove(name);
+                        info!("🗑️  Removed peer from list: {}", name);
+                    } else {
+                        // 如果没有中划线，说明 instance_name 就是 hostname
+                        peer_list.peers.remove(raw_name);
+                    }
+                }
             }
             // 发现
             ServiceEvent::ServiceFound(service_type, fullname) => {
@@ -111,5 +130,5 @@ pub struct PeerInfo {
     pub name: String,
     pub ips: Vec<String>,
     pub os: String,
-    pub last_seen: f64, // TODO: 用于后续处理掉线检测
+    pub last_seen: f64,
 }
