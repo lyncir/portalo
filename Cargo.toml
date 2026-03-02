@@ -1,10 +1,40 @@
 [package]
 name = "portalo"
-version = "0.1.0"
+
+#使用workspace.package的值
+version.workspace = true
+edition.workspace = true
+
+# 工作区
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+# 包版本
+version = "0.0.1"
+# rust版本
 edition = "2024"
 
-
 [dependencies]
+# main使用workspace.dependencies的依赖
+
+# portalo
+portalo_discovery.workspace = true
+portalo_network.workspace = true
+
+# Other
+bevy.workspace = true
+local-ip-address.workspace = true
+
+[workspace.dependencies]
+# 所有依赖版本
+
+# portalo
+portalo_discovery = { path = "crates/discovery", version = "0.0.1" }
+portalo_network = { path = "crates/network", version = "0.0.1" }
+
+# Other
 mdns-sd = "0.18.0"
 local-ip-address = "0.6.10"
 gethostname = "1.1.0"
@@ -13,8 +43,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
 anyhow = "1.0"
 
-
-[dependencies.bevy]
+[workspace.dependencies.bevy]
 version = "0.18.0"
 default-features = false
 features = [

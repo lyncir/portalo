@@ -1,0 +1,17 @@
+[package]
+name = "portalo_discovery"
+
+#使用workspace.package的值
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+#使用workspace.dependencies的依赖
+
+# portalo
+
+# Other
+bevy.workspace = true
+gethostname.workspace = true
+mdns-sd.workspace = true
+local-ip-address.workspace = true
