@@ -1,10 +1,7 @@
-use bevy::app::AppExit;
 use bevy::prelude::*;
-use local_ip_address::list_afinet_netifas;
 
 use portalo_discovery::{
-    auto_publish_service, initialize_mdns_daemon, DeviceMetadata, MdnsManager, PeerList,
-    ServiceDiscoveryPlugin,
+    auto_publish_service, initialize_mdns_daemon, DeviceMetadata, PeerList, ServiceDiscoveryPlugin,
 };
 use portalo_network::{send_file_fast, NetworkPlugin, TokioRuntime};
 
@@ -18,7 +15,6 @@ fn main() {
             (setup, initialize_mdns_daemon, auto_publish_service).chain(),
         )
         .add_systems(Update, (list_interfaces, update_peer_list_ui))
-        .add_systems(Last, shutdown_service)
         .run();
 }
 
@@ -195,35 +191,6 @@ fn update_peer_list_ui(
     for (entity, entry) in entry_q.iter() {
         if ui_peers.contains(&entry.0) {
             commands.entity(entity).despawn();
-        }
-    }
-}
-
-fn shutdown_service(
-    exit: MessageReader<AppExit>,
-    mdns: Res<MdnsManager>,
-    device_metadata: Res<DeviceMetadata>,
-) {
-    if !exit.is_empty() {
-        let service_type = "_portalo._tcp.local.";
-        // 必须与注册时的 instance_name 完全一致
-        if let Ok(network_interfaces) = list_afinet_netifas() {
-            for (name, ip) in network_interfaces {
-                // 过滤：非回环且IPv4接口
-                if !ip.is_loopback() && ip.is_ipv4() {
-                    // 为每个网卡创建一个唯一的实例名称（Dukto 识别需要）
-                    let instance_name =
-                        format!("portalo-{}-{}", device_metadata.hostname.clone(), name);
-
-                    let full_name = format!("{}.{}", instance_name, service_type);
-                    // 注销
-                    if let Err(e) = mdns.daemon.unregister(&full_name) {
-                        error!("❌ 无法注销服务: {}", e);
-                    } else {
-                        info!("👋 服务已主动下线: {}", full_name);
-                    }
-                }
-            }
         }
     }
 }

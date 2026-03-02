@@ -1,3 +1,4 @@
+use bevy::app::AppExit;
 use bevy::prelude::*;
 use gethostname::gethostname;
 use local_ip_address::list_afinet_netifas;
@@ -6,7 +7,6 @@ use std::collections::HashMap;
 
 // ///服务发现与注册
 // --------------- PLUGIN --------------- //
-
 // 服务发现插件
 pub struct ServiceDiscoveryPlugin;
 
@@ -15,7 +15,8 @@ impl Plugin for ServiceDiscoveryPlugin {
         // 初始化空的设备列表
         app.init_resource::<PeerList>()
             // 仅仅添加监听系统，初始化系统由 main 控制顺序
-            .add_systems(Update, (listen_for_services,));
+            .add_systems(Update, (listen_for_service,))
+            .add_systems(Last, shutdown_service);
     }
 }
 
@@ -50,7 +51,7 @@ pub struct MdnsManager {
     pub receiver: Receiver<ServiceEvent>,
 }
 
-// 设备信息
+// 我的设备信息
 #[derive(Resource)]
 pub struct DeviceMetadata {
     // 主机名字
@@ -68,7 +69,6 @@ pub struct PeerList {
 // --------------- COMPONENTS --------------- //
 
 // --------------- SYSTEMS --------------- //
-
 // 发布服务
 pub fn auto_publish_service(mdns_res: Res<MdnsManager>, device_metadata: Res<DeviceMetadata>) {
     let service_type = "_portalo._tcp.local.";
@@ -110,7 +110,7 @@ pub fn auto_publish_service(mdns_res: Res<MdnsManager>, device_metadata: Res<Dev
 }
 
 // 监听服务
-fn listen_for_services(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, time: Res<Time>) {
+fn listen_for_service(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, time: Res<Time>) {
     while let Ok(event) = mdns.receiver.try_recv() {
         match event {
             // 解析
@@ -145,8 +145,21 @@ fn listen_for_services(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, 
                     os,
                     last_seen: time.elapsed_secs_f64(),
                 };
-                let name = hostname.replace(".local.", "");
-                peer_list.peers.insert(name, peer);
+
+                if let Some(instance_part) = info.fullname.split('.').next() {
+                    // 去掉 "portalo-" 前缀
+                    let raw_name = instance_part
+                        .strip_prefix("portalo-")
+                        .unwrap_or(instance_part);
+
+                    // 进一步去掉后缀网卡名（如果有的话，比如 "-eth0"）
+                    if let Some((name, _interface)) = raw_name.rsplit_once('-') {
+                        peer_list.peers.insert(name.to_string(), peer);
+                    } else {
+                        // 如果没有中划线，说明 instance_name 就是 hostname
+                        peer_list.peers.insert(raw_name.to_string(), peer);
+                    }
+                }
             }
             // 断开
             ServiceEvent::ServiceRemoved(service_type, fullname) => {
@@ -161,7 +174,6 @@ fn listen_for_services(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, 
                         .unwrap_or(instance_part);
 
                     // 进一步去掉后缀网卡名（如果有的话，比如 "-eth0"）
-                    // 这里的逻辑要和你插入时的 Key 生成逻辑对齐
                     if let Some((name, _interface)) = raw_name.rsplit_once('-') {
                         peer_list.peers.remove(name);
                         info!("🗑️  Removed peer from list: {}", name);
@@ -191,6 +203,38 @@ fn listen_for_services(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, 
     }
 }
 
+// 关闭服务
+pub fn shutdown_service(
+    exit: MessageReader<AppExit>,
+    mdns: Res<MdnsManager>,
+    device_metadata: Res<DeviceMetadata>,
+) {
+    if !exit.is_empty() {
+        let service_type = "_portalo._tcp.local.";
+        // 必须与注册时的 instance_name 完全一致
+        if let Ok(network_interfaces) = list_afinet_netifas() {
+            for (name, ip) in network_interfaces {
+                // 过滤：非回环且IPv4接口
+                if !ip.is_loopback() && ip.is_ipv4() {
+                    // 为每个网卡创建一个唯一的实例名称（Dukto 识别需要）
+                    let instance_name =
+                        format!("portalo-{}-{}", device_metadata.hostname.clone(), name);
+
+                    let full_name = format!("{}.{}", instance_name, service_type);
+                    // 注销
+                    if let Err(e) = mdns.daemon.unregister(&full_name) {
+                        error!("❌ 无法注销服务: {}", e);
+                    } else {
+                        info!("👋 服务已主动下线: {}", full_name);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --------------- OTHER --------------- //
+// 设备信息
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
     pub name: String,
