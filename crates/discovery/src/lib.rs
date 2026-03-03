@@ -1,9 +1,16 @@
 use bevy::app::AppExit;
 use bevy::prelude::*;
+use bevy::tasks::{IoTaskPool, Task};
+use bevy::time::common_conditions;
 use gethostname::gethostname;
 use local_ip_address::list_afinet_netifas;
 use mdns_sd::{Receiver, ServiceDaemon, ServiceEvent, ServiceInfo};
+use portalo_network::TokioRuntime;
 use std::collections::HashMap;
+use std::net::IpAddr;
+use std::net::SocketAddr;
+use std::time::Duration;
+use tokio::net::TcpStream;
 
 // ///服务发现与注册
 // --------------- PLUGIN --------------- //
@@ -14,8 +21,20 @@ impl Plugin for ServiceDiscoveryPlugin {
     fn build(&self, app: &mut App) {
         // 初始化空的设备列表
         app.init_resource::<PeerList>()
+            // 初始化计时器
+            .init_resource::<ServiceBroadcastTimer>()
             // 仅仅添加监听系统，初始化系统由 main 控制顺序
-            .add_systems(Update, (listen_for_service,))
+            .add_systems(
+                Update,
+                (
+                    listen_for_service,
+                    keep_alive_broadcast,
+                    // 使用 Bevy 自带的定时器控制运行频率
+                    cleanup_expired_peers
+                        .run_if(common_conditions::on_timer(Duration::from_secs(1))),
+                    handle_probe_results,
+                ),
+            )
             .add_systems(Last, shutdown_service);
     }
 }
@@ -30,7 +49,11 @@ pub fn initialize_mdns_daemon(mut commands: Commands) {
         os: std::env::consts::OS.to_string(),
     });
 
-    let daemon = ServiceDaemon::new().expect("Failed to create mDNS daemon");
+    let daemon = ServiceDaemon::new().unwrap_or_else(|e| {
+        error!("Failed to create mDNS daemon: {}", e);
+        // 或者直接返回
+        std::process::exit(1);
+    });
 
     // 在启动时仅调用一次 browse
     let service_type = "_portalo._tcp.local.";
@@ -66,7 +89,24 @@ pub struct PeerList {
     pub peers: HashMap<String, PeerInfo>,
 }
 
+// 服务广播计时器
+#[derive(Resource)]
+pub struct ServiceBroadcastTimer(pub Timer);
+
+impl Default for ServiceBroadcastTimer {
+    fn default() -> Self {
+        // 每 45 秒广播一次
+        Self(Timer::from_seconds(30.0, TimerMode::Repeating))
+    }
+}
+
 // --------------- COMPONENTS --------------- //
+// 连接校验
+#[derive(Component)]
+pub struct ConnectivityTask {
+    pub peer_id: String,
+    pub task: Task<(String, bool)>,
+}
 
 // --------------- SYSTEMS --------------- //
 // 发布服务
@@ -82,10 +122,17 @@ pub fn auto_publish_service(mdns_res: Res<MdnsManager>, device_metadata: Res<Dev
                 // 为每个网卡创建一个唯一的实例名称（Dukto 识别需要）
                 let instance_name =
                     format!("portalo-{}-{}", device_metadata.hostname.clone(), name);
-                // 额外信息
+                // 使用当前系统时间作为心跳版本
+                let hb_version = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .to_string();
+                // 额外信息, hb_version变动的值会触发其他节点的 Resolved 事件
                 let properties = [
                     ("os", device_metadata.os.clone()),
                     ("ver", "0.1.0".to_string()),
+                    ("hb", hb_version),
                 ];
 
                 let my_service = ServiceInfo::new(
@@ -110,7 +157,13 @@ pub fn auto_publish_service(mdns_res: Res<MdnsManager>, device_metadata: Res<Dev
 }
 
 // 监听服务
-fn listen_for_service(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, time: Res<Time>) {
+fn listen_for_service(
+    mut commands: Commands,
+    mdns: Res<MdnsManager>,
+    mut peer_list: ResMut<PeerList>,
+    time: Res<Time>,
+    runtime: Res<TokioRuntime>,
+) {
     while let Ok(event) = mdns.receiver.try_recv() {
         match event {
             // 解析
@@ -138,50 +191,60 @@ fn listen_for_service(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, t
                     .map(|p| p.val_str().to_string())
                     .unwrap_or_else(|| "unknown".to_string());
 
-                // 这里将其插入 PeerList 资源，供 UI 系统遍历
-                let peer = PeerInfo {
-                    name: hostname.clone(),
-                    ips,
-                    os,
-                    last_seen: time.elapsed_secs_f64(),
-                };
+                // 设备名
+                let device_name = extract_device_name(&info.fullname);
 
-                if let Some(instance_part) = info.fullname.split('.').next() {
-                    // 去掉 "portalo-" 前缀
-                    let raw_name = instance_part
-                        .strip_prefix("portalo-")
-                        .unwrap_or(instance_part);
+                // 更新或创建 Peer 记录
+                let entry = peer_list
+                    .peers
+                    .entry(device_name.clone())
+                    .or_insert(PeerInfo {
+                        name: hostname.clone(),
+                        ips: ips.clone(),
+                        os: os,
+                        last_seen: time.elapsed_secs_f64(),
+                        is_reachable: false,
+                        is_checking: false,
+                    });
 
-                    // 进一步去掉后缀网卡名（如果有的话，比如 "-eth0"）
-                    if let Some((name, _interface)) = raw_name.rsplit_once('-') {
-                        peer_list.peers.insert(name.to_string(), peer);
-                    } else {
-                        // 如果没有中划线，说明 instance_name 就是 hostname
-                        peer_list.peers.insert(raw_name.to_string(), peer);
-                    }
+                // 如果该设备没在检测中，派发新的探测任务
+                if !entry.is_checking {
+                    entry.is_checking = true;
+                    let device_name_clone = device_name.clone();
+                    // TODO:
+                    let target_ip = "10.6.31.50".to_string(); // 取第一个IP进行探测
+                    let port = 49527;
+
+                    // 获取 Bevy 的任务池
+                    let thread_pool = IoTaskPool::get();
+                    // 使用 task_pool.spawn 代替 runtime.spawn
+                    // 注意：由于 probe_address 内部使用了 tokio::time::timeout，
+                    // 我们必须在外层套一个 block_on 或者确保 tokio runtime 正在运行
+                    let rt_handle = runtime.0.handle().clone();
+                    let task = thread_pool.spawn(async move {
+                        // 在 Bevy 线程中通过 runtime 句柄执行 Tokio 特有的异步逻辑
+                        rt_handle
+                            .spawn(async move {
+                                probe_address(device_name_clone, target_ip, port).await
+                            })
+                            .await
+                            .unwrap_or_else(|_| ("error".to_string(), false))
+                    });
+
+                    commands.spawn(ConnectivityTask {
+                        peer_id: device_name,
+                        task: task,
+                    });
                 }
             }
             // 断开
             ServiceEvent::ServiceRemoved(service_type, fullname) => {
                 info!("❌ Service removed: {} (type: {})", fullname, service_type);
 
-                // 逻辑：fullname 通常是 "portalo-hostname-eth0._portalo._tcp.local."
-                // 我们需要提取出 hostname 部分，使其与插入时的 Key 匹配
-                if let Some(instance_part) = fullname.split('.').next() {
-                    // 去掉 "portalo-" 前缀
-                    let raw_name = instance_part
-                        .strip_prefix("portalo-")
-                        .unwrap_or(instance_part);
-
-                    // 进一步去掉后缀网卡名（如果有的话，比如 "-eth0"）
-                    if let Some((name, _interface)) = raw_name.rsplit_once('-') {
-                        peer_list.peers.remove(name);
-                        info!("🗑️  Removed peer from list: {}", name);
-                    } else {
-                        // 如果没有中划线，说明 instance_name 就是 hostname
-                        peer_list.peers.remove(raw_name);
-                    }
-                }
+                // 设备名
+                let device_name = extract_device_name(&fullname);
+                peer_list.peers.remove(&device_name);
+                info!("🗑️  Removed peer from list: {}", device_name);
             }
             // 发现
             ServiceEvent::ServiceFound(service_type, fullname) => {
@@ -233,6 +296,64 @@ pub fn shutdown_service(
     }
 }
 
+// 定期广播
+pub fn keep_alive_broadcast(
+    time: Res<Time>,
+    mut timer: ResMut<ServiceBroadcastTimer>,
+    mdns_res: Res<MdnsManager>,
+    device_metadata: Res<DeviceMetadata>,
+) {
+    if timer.0.tick(time.delta()).just_finished() {
+        info!("📡 Sending keep-alive broadcast...");
+
+        // 重新调用你之前定义的发布逻辑
+        // 注意：mdns-sd 的 register 如果实例名相同，通常会覆盖旧的记录
+        auto_publish_service(mdns_res, device_metadata);
+    }
+}
+
+// 清理过期的peer
+fn cleanup_expired_peers(mut peer_list: ResMut<PeerList>, time: Res<Time>) {
+    let now = time.elapsed_secs_f64();
+    // 60秒超时(心跳45秒)
+    let timeout = 45.0;
+
+    // retain 会保留返回 true 的项，移除返回 false 的项
+    peer_list.peers.retain(|name, info| {
+        // 自己或有效期内
+        let is_alive = (now - info.last_seen) < timeout;
+
+        if !is_alive {
+            info!("⏳ Peer timed out: {}", name);
+        }
+        is_alive
+    });
+}
+
+fn handle_probe_results(
+    mut commands: Commands,
+    mut peer_list: ResMut<PeerList>,
+    mut tasks: Query<(Entity, &mut ConnectivityTask)>,
+) {
+    for (entity, mut task) in &mut tasks {
+        // 使用 Bevy 的 Future 轮询机制
+        if let Some((peer_id, is_reachable)) =
+            bevy::tasks::block_on(bevy::tasks::futures_lite::future::poll_once(&mut task.task))
+        {
+            // 更新 Peer 状态
+            if let Some(peer) = peer_list.peers.get_mut(&peer_id) {
+                peer.is_reachable = is_reachable;
+                peer.is_checking = false;
+                if is_reachable {
+                    info!("✅ Peer {} is reachable", peer_id);
+                }
+            }
+            // 任务完成后移除组件
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 // --------------- OTHER --------------- //
 // 设备信息
 #[derive(Debug, Clone)]
@@ -241,6 +362,8 @@ pub struct PeerInfo {
     pub ips: Vec<String>,
     pub os: String,
     pub last_seen: f64,
+    pub is_reachable: bool, // 是否在线/可达
+    pub is_checking: bool,  // 是否正在检测中
 }
 
 // 获取主机名字 eg: devuan
@@ -259,4 +382,50 @@ fn get_cross_platform_hostname() -> String {
 // 获取带后缀的主机名(用于mdns) eg: devuan.local.
 fn get_hostname_with_suffix(hostname: &str) -> String {
     format!("{}.local.", hostname.trim_end_matches('.'))
+}
+
+// 从fullname中提取设备名
+fn extract_device_name(fullname: &str) -> String {
+    // 1. 获取第一个点之前的部分 (Instance Name)
+    // "portalo-MyLaptop-eth0._portalo._tcp.local." -> "portalo-MyLaptop-eth0"
+    let instance_name = fullname.split('.').next().unwrap_or(fullname);
+
+    // 2. 去掉自定义协议前缀 (如有)
+    // "portalo-MyLaptop-eth0" -> "MyLaptop-eth0"
+    let raw_name = instance_name
+        .strip_prefix("portalo-")
+        .unwrap_or(instance_name);
+
+    // 3. 处理网卡后缀
+    // mDNS 注册时为了唯一性，通常会在末尾加上网卡名 (如 -eth0, -wlan0)
+    // 我们寻找最后一个连字符并切分
+    if let Some((name, _interface)) = raw_name.rsplit_once('-') {
+        name.to_string()
+    } else {
+        // 如果没有连字符，说明 instance_name 就是设备名本身
+        raw_name.to_string()
+    }
+}
+
+// 异步探测函数
+async fn probe_address(peer_id: String, ip_str: String, port: u16) -> (String, bool) {
+    let Ok(ip) = ip_str.parse::<IpAddr>() else {
+        return (peer_id, false);
+    };
+    let addr = SocketAddr::new(ip, port);
+
+    // 尝试建立 TCP 连接，超时时间 2 秒
+    let result = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(addr)).await;
+
+    match result {
+        Ok(Ok(_stream)) => (peer_id, true), // 连接成功
+        Ok(Err(e)) => {
+            error!("Connection failed to {}: {} ({})", peer_id, e, ip_str);
+            (peer_id, false)
+        }
+        Err(_) => {
+            warn!("Connection to {} timed out", peer_id);
+            (peer_id, false)
+        }
+    }
 }

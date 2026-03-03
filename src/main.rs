@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 
 use portalo_discovery::{
-    auto_publish_service, initialize_mdns_daemon, DeviceMetadata, PeerList, ServiceDiscoveryPlugin,
+    auto_publish_service, initialize_mdns_daemon, keep_alive_broadcast, DeviceMetadata, PeerList,
+    ServiceDiscoveryPlugin,
 };
 use portalo_network::{send_file_fast, NetworkPlugin, TokioRuntime};
 
@@ -81,21 +82,24 @@ fn list_interfaces(
                 println!("\n{}. {}", idx + 1, name);
                 println!("   Addresses: {}", info.ips.join(", "));
                 println!("   OS: {}", info.os);
+                println!("   Last: {}", info.last_seen);
+                println!("   IsReachable: {}", info.is_reachable);
+                println!("   IsChecking: {}", info.is_checking);
             }
         }
         println!("\n{}\n", "=".repeat(70));
 
         // 发送文件
-        let dest = format!("{}:49527", "192.168.56.133");
-        let path = "/tmp/1.txt";
+        //let dest = format!("{}:49527", "192.168.56.133");
+        //let path = "/tmp/1.txt";
 
-        let handle = runtime.0.handle().clone();
-        handle.spawn(async move {
-            info!("🚀 Starting transfer to {}...", dest);
-            if let Err(e) = send_file_fast(dest, path.to_string()).await {
-                error!("❌ Transfer failed: {}", e);
-            }
-        });
+        //let handle = runtime.0.handle().clone();
+        //handle.spawn(async move {
+        //    info!("🚀 Starting transfer to {}...", dest);
+        //    if let Err(e) = send_file_fast(dest, path.to_string()).await {
+        //        error!("❌ Transfer failed: {}", e);
+        //    }
+        //});
     }
 }
 
@@ -193,26 +197,4 @@ fn update_peer_list_ui(
             commands.entity(entity).despawn();
         }
     }
-}
-
-// 清理异常的peer
-fn cleanup_stale_peers(
-    mut peer_list: ResMut<PeerList>,
-    time: Res<Time>,
-    device_metadata: Res<DeviceMetadata>,
-) {
-    let now = time.elapsed_secs_f64();
-    let timeout = 30.0; // 30秒超时
-
-    // retain 会保留返回 true 的项，移除返回 false 的项
-    peer_list.peers.retain(|name, info| {
-        // 自己或有效期内
-        let is_alive =
-            (name.to_string() == device_metadata.hostname) || ((now - info.last_seen) < timeout);
-
-        if !is_alive {
-            info!("⏳ Peer timed out: {}", name);
-        }
-        is_alive
-    });
 }

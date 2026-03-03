@@ -8,6 +8,7 @@ use tokio::runtime::Runtime;
 use tokio_util::io::ReaderStream;
 
 // 网络插件
+// --------------- PLUGIN --------------- //
 pub struct NetworkPlugin;
 
 impl Plugin for NetworkPlugin {
@@ -25,8 +26,8 @@ impl Plugin for NetworkPlugin {
     }
 }
 
-fn setup_network_listener(runtime: Res<TokioRuntime>, // 注入我们存好的运行时
-) {
+// --------------- SETUP --------------- //
+fn setup_network_listener(runtime: Res<TokioRuntime>) {
     // 拿到 handle，它是轻量级可克隆的
     let handle = runtime.0.handle().clone();
     let save_path = PathBuf::from("./downloads");
@@ -65,9 +66,13 @@ fn setup_network_listener(runtime: Res<TokioRuntime>, // 注入我们存好的�
     });
 }
 
+// --------------- RESOURCES --------------- //
 #[derive(Resource)]
 pub struct TokioRuntime(pub Runtime);
 
+// --------------- COMPONENTS --------------- //
+
+// --------------- SYSTEMS --------------- //
 // 接收任务的逻辑
 pub async fn start_file_receiver(
     mut stream: tokio::net::TcpStream,
