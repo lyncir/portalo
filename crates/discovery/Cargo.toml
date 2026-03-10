@@ -15,6 +15,3 @@ bevy.workspace = true
 gethostname.workspace = true
 mdns-sd.workspace = true
 local-ip-address.workspace = true
-tokio.workspace = true
-futures-lite.workspace = true
-portalo_network.workspace = true

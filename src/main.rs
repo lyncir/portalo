@@ -83,8 +83,6 @@ fn list_interfaces(
                 println!("   Addresses: {}", info.ips.join(", "));
                 println!("   OS: {}", info.os);
                 println!("   Last: {}", info.last_seen);
-                println!("   IsReachable: {}", info.is_reachable);
-                println!("   IsChecking: {}", info.is_checking);
             }
         }
         println!("\n{}\n", "=".repeat(70));
