@@ -124,7 +124,7 @@ pub async fn start_file_receiver(
         }),
     };
 
-    // 设置超时,避免发送方断开卡住
+    // TODO: 如果连续 30 秒没有任何数据传输，才断开
     let copy_result = timeout(
         Duration::from_secs(30),
         tokio::io::copy(&mut progress_reader, &mut writer)
