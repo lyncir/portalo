@@ -88,16 +88,16 @@ fn list_interfaces(
         println!("\n{}\n", "=".repeat(70));
 
         // 发送文件
-        //let dest = format!("{}:49527", "192.168.56.133");
-        //let path = "/tmp/1.txt";
+        let dest = format!("{}:49527", "192.168.56.133");
+        let path = "/tmp/1.txt";
 
-        //let handle = runtime.0.handle().clone();
-        //handle.spawn(async move {
-        //    info!("🚀 Starting transfer to {}...", dest);
-        //    if let Err(e) = send_file_fast(dest, path.to_string()).await {
-        //        error!("❌ Transfer failed: {}", e);
-        //    }
-        //});
+        let handle = runtime.0.handle().clone();
+        handle.spawn(async move {
+            info!("🚀 Starting transfer to {}...", dest);
+            if let Err(e) = send_file_fast(dest, path.to_string()).await {
+                error!("❌ Transfer failed: {}", e);
+            }
+        });
     }
 }
 

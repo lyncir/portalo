@@ -1,9 +1,12 @@
-use anyhow;
+use std::time::Duration;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::time::timeout;
 use bevy::prelude::*;
 use futures_util::StreamExt;
 use std::path::PathBuf;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter, AsyncRead, ReadBuf};
 use tokio::runtime::Runtime;
 use tokio_util::io::ReaderStream;
 
@@ -78,63 +81,88 @@ pub async fn start_file_receiver(
     mut stream: tokio::net::TcpStream,
     save_path: PathBuf,
 ) -> anyhow::Result<()> {
-    // 1. 设置缓冲区优化 (针对移动端/桌面端平衡)
+    // 设置缓冲区优化 (针对移动端/桌面端平衡)
 
-    // 2. 解析协议头 (按照我们之前的约定)
-    // 读取文件名长度 (u32)
-    let name_len = stream.read_u32().await? as usize;
-    // 防御：防止文件名长度异常导致内存溢出
+    // 解析协议头: |文件名长度|文件名称|文件大小|
+    // 文件名长度
+    let name_len = stream.read_u32_le().await? as usize;
+    // 防止文件名长度异常导致内存溢出
     if name_len > 4096 {
         return Err(anyhow::anyhow!("File name too long: {}", name_len));
     }
 
+    // 文件名
     let mut name_buf = vec![0u8; name_len];
     stream.read_exact(&mut name_buf).await?;
     let file_name = String::from_utf8_lossy(&name_buf).to_string();
-    // 过滤文件名，防止路径穿越攻击（安全重点！）
+    // 过滤文件名，防止路径穿越攻击
     let safe_file_name = std::path::Path::new(&file_name)
         .file_name()
+        .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow::anyhow!("Invalid file name"))?;
 
-    // 读取文件总大小 (u64)
-    let file_size = stream.read_u64().await?;
+    // 文件大小
+    let file_size = stream.read_u64_le().await?;
 
     println!("{:?}", safe_file_name);
     println!("{}", file_size);
 
-    // 3. 创建文件并准备写入
+    // 创建文件夹及文件，并打开句柄
     tokio::fs::create_dir_all(&save_path).await?;
-    let full_path = save_path.join(&safe_file_name);
-
+    let full_path = save_path.join(safe_file_name);
     let file = File::create(&full_path).await?;
-    // 使用 BufWriter 极大提升写入机械硬盘或移动端 Flash 的速度
     let mut writer = BufWriter::with_capacity(128 * 1024, file);
 
-    // 4. 【核心：高性能流转】
-    // 使用 tokio::io::copy 直接在内核级将数据从 Socket 拼接到 File
-    // 这是 Rust 中最快且最省内存的写法
-    let mut reader = stream.take(file_size); // 确保只读取指定大小的内容
-    let bytes_copied = tokio::io::copy(&mut reader, &mut writer).await?;
+    // 零拷贝写入
+    let mut progress_reader = ProgressReader {
+        inner: stream.take(file_size),
+        total: file_size,
+        current: 0,
+        last_reported: 0,
+        on_progress: Box::new(|c, t| {
+            // TODO: 进度回调
+        }),
+    };
 
-    // 强制刷新缓冲区到磁盘
-    writer.flush().await?;
+    // 设置超时,避免发送方断开卡住
+    let copy_result = timeout(
+        Duration::from_secs(30),
+        tokio::io::copy(&mut progress_reader, &mut writer)
+    ).await;
 
-    info!("✅ 文件接收成功: {} ({} bytes)", file_name, bytes_copied);
-    Ok(())
+    match copy_result {
+        Ok(Ok(bytes_copied)) => {
+            // flush
+            writer.flush().await?;
+            info!("✅ 文件接收成功: {} ({} bytes)", file_name, bytes_copied);
+
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            // IO 错误
+            Err(anyhow::anyhow!("IO Error during copy: {}", e))
+        }
+        Err(_) => {
+            // 超时错误
+            Err(anyhow::anyhow!("Transfer timed out: No data for 30s"))
+        }
+    }
 }
 
 pub async fn send_file_fast(dest_addr: String, file_path: String) -> anyhow::Result<()> {
-    // 1. 建立连接 (Dukto 默认端口 49527)
+    // 建立连接 (Dukto 默认端口 49527)
     let mut stream = tokio::net::TcpStream::connect(&dest_addr).await?;
 
-    // 优化：设置 TCP_NODELAY 减少延迟，适合小块数据
+    // 设置 TCP_NODELAY 减少延迟
     stream.set_nodelay(true)?;
+    // TODO: 调整适合小块数据
 
-    // 2. 打开文件并获取元数据
+    // 打开文件并获取元数据
     let file = File::open(&file_path).await?;
-
     let metadata = file.metadata().await?;
+    // 文件大小
     let file_size = metadata.len();
+    // 文件名
     let file_name = std::path::Path::new(&file_path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -143,23 +171,63 @@ pub async fn send_file_fast(dest_addr: String, file_path: String) -> anyhow::Res
     println!("{:?}", file_name);
     println!("{}", file_size);
 
-    // 3. 协议头：发送文件名长度、名称和大小
-    // 提示：这部分需要和你定义的接收端协议对齐
-    stream.write_u32(file_name.len() as u32).await?;
+    // 协议头: |文件名长度|文件名称|文件大小|
+    stream.write_u32_le(file_name.len() as u32).await?;
     stream.write_all(file_name.as_bytes()).await?;
-    stream.write_u64(file_size).await?;
+    stream.write_u64_le(file_size).await?;
+    // 发送协议头
     stream.flush().await?;
 
-    // 4. 【核心：高性能传输】使用 ReaderStream
-    let mut reader_stream = ReaderStream::new(file);
+    // 监控进度
+    let mut progress_reader = ProgressReader {
+        inner: file,
+        total: file_size,
+        current: 0,
+        last_reported: 0,
+        on_progress: Box::new(|c, t| {
+            // TODO: 进度回调
+        }),
+    };
 
-    while let Some(chunk) = reader_stream.next().await {
-        let bytes = chunk?;
-        stream.write_all(&bytes).await?;
+    // 零拷贝发送
+    let bytes_sent = tokio::io::copy(&mut progress_reader, &mut stream).await?;
 
-        // 这里可以计算已发送字节数，发送给 Bevy UI 更新进度条
-    }
-
-    info!("✅ 传输完成: {}", file_name);
+    info!("✅ 传输完成: {} ({} bytes)", file_name, bytes_sent);
     Ok(())
+}
+
+
+// 定义一个包装器，记录经过的字节数
+struct ProgressReader<R> {
+    inner: R,
+    total: u64,
+    current: u64,
+    last_reported: u64,
+    // 传入回调或 Channel
+    on_progress: Box<dyn Fn(u64, u64) + Send + Sync>,
+}
+
+
+impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+
+        if let Poll::Ready(Ok(())) = poll {
+            let n = buf.filled().len() - before;
+            self.current += n as u64;
+
+            // 🚀 频率控制：每增加 1MB 或者传输结束时才回调
+            // 1024 * 1024 = 1MB
+            if self.current - self.last_reported >= 1024 * 1024 || self.current == self.total {
+                self.last_reported = self.current;
+                (self.on_progress)(self.current, self.total);
+            }
+        }
+        poll
+    }
 }

@@ -39,7 +39,7 @@ pub fn initialize_mdns_daemon(mut commands: Commands) {
     // 获取主机名字
     let hostname = get_cross_platform_hostname();
     commands.insert_resource(DeviceMetadata {
-        hostname: hostname,
+        hostname,
         os: std::env::consts::OS.to_string(),
     });
 
@@ -182,13 +182,13 @@ fn listen_for_service(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, t
                     .or_insert(PeerInfo {
                         name: hostname.clone(),
                         ips: vec![],
-                        os: os,
+                        os,
                         last_seen: time.elapsed_secs_f64(),
                     });
 
                 entry.last_seen = time.elapsed_secs_f64();
                 for ip in ips.iter() {
-                    if !entry.ips.contains(&ip) {
+                    if !entry.ips.contains(ip) {
                         entry.ips.push(ip.to_string());
                     }
                 }
