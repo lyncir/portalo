@@ -8,10 +8,16 @@ android {
 
     defaultConfig {
         applicationId "org.bevyengine.portalo"
-        minSdk 31
+        minSdk 26
         targetSdk 33
         versionCode 1
         versionName "1.0"
+		// need this otherwise it won't insert libc++_shared.so
+		//externalNativeBuild {
+		//    cmake {
+		//        arguments "-DANDROID_STL=c++_shared"
+		//    }
+		//}
         // set up targets
         ndk {
             abiFilters = []
@@ -19,6 +25,11 @@ android {
         }
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
+	//externalNativeBuild {
+	//    cmake {
+	//        path "CMakeLists.txt"
+	//    }
+	//}
     buildTypes {
         release {
             minifyEnabled false
@@ -32,6 +43,10 @@ android {
     buildFeatures {
         prefab true
     }
+	// The final part to insert libc++_shared.so only
+	//packagingOptions {
+	//    exclude 'lib/*/libdummy.so'
+	//}
     sourceSets {
         main {
             assets.srcDirs += files('../../assets')
