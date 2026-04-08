@@ -22,3 +22,9 @@ android_src/.gradle
 android_src/app/.cxx/
 android_src/app/build/
 android_src/.zcache/
+
+android_app/src/main/jniLibs
+android_app/.gradle
+android_app/.cxx/
+android_app/build/
+android_app/.zcache/

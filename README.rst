@@ -30,5 +30,10 @@ linux编译android命令::
 	# 安装sdk ndk
 	sdkmanager "platforms;android-26" "platform-tools" "ndk;27.0.12077973"
 
-	cargo ndk -t arm64-v8a -P 26 -o android_src/app/src/main/jniLibs build --package portalo
-   	cd android_src && chmod +x gradlew && ./gradlew build && cd ..
+	cargo ndk -t arm64-v8a -P 26 -o android_app/src/main/jniLibs build --package portalo
+   	cd android_app && chmod +x gradlew && ./gradlew build
+	# 安装apk
+	./gradlew installDebug
+	# 调试
+	adb logcat | grep 'RustStdoutStderr\|bevy\|wgpu'
+

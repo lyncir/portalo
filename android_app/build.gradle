@@ -13,11 +13,11 @@ android {
         versionCode 1
         versionName "1.0"
 		// need this otherwise it won't insert libc++_shared.so
-		//externalNativeBuild {
-		//    cmake {
-		//        arguments "-DANDROID_STL=c++_shared"
-		//    }
-		//}
+		externalNativeBuild {
+			cmake {
+				arguments "-DANDROID_STL=c++_shared"
+			}
+		}
         // set up targets
         ndk {
             abiFilters = []
@@ -25,11 +25,11 @@ android {
         }
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
-	//externalNativeBuild {
-	//    cmake {
-	//        path "CMakeLists.txt"
-	//    }
-	//}
+	externalNativeBuild {
+		cmake {
+			path "CMakeLists.txt"
+		}
+	}
     buildTypes {
         release {
             minifyEnabled false
@@ -44,14 +44,14 @@ android {
         prefab true
     }
 	// The final part to insert libc++_shared.so only
-	//packagingOptions {
-	//    exclude 'lib/*/libdummy.so'
-	//}
+	packagingOptions {
+		exclude 'lib/*/libdummy.so'
+	}
     sourceSets {
         main {
-            assets.srcDirs += files('../../assets')
+            assets.srcDirs += files('../assets')
 
-            res.srcDirs += files('../../assets/android-res')
+            res.srcDirs += files('../assets/android-res')
         }
     }
 }
