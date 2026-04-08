@@ -85,3 +85,8 @@ lto = "thin"
 # 将整个crate作为为一个单元进行编译(默认并行编译)
 # 编译时间变慢，提升微乎其微
 codegen-units = 1
+
+
+[lib]
+# Android 需要编译为 C 动态库
+crate-type = ["lib", "cdylib"]
