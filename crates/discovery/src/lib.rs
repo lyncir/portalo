@@ -18,7 +18,7 @@ impl Plugin for ServiceDiscoveryPlugin {
         app.init_resource::<PeerList>()
             // 初始化计时器
             .init_resource::<ServiceBroadcastTimer>()
-            // 仅仅添加监听系统，初始化系统由 main 控制顺序
+            // 仅添加监听系统，初始化系统由 main 控制顺序
             .add_systems(
                 Update,
                 (
@@ -29,7 +29,7 @@ impl Plugin for ServiceDiscoveryPlugin {
                         .run_if(common_conditions::on_timer(Duration::from_secs(1))),
                 ),
             )
-            .add_systems(Last, shutdown_service);
+            .add_systems(Last, shutdown_service); // TODO: 各平台好像不一样
     }
 }
 
@@ -44,8 +44,8 @@ pub fn initialize_mdns_daemon(mut commands: Commands) {
     });
 
     let daemon = ServiceDaemon::new().unwrap_or_else(|e| {
-        error!("Failed to create mDNS daemon: {}", e);
-        // 或者直接返回
+        error!("# Failed to create mDNS daemon: {}", e);
+        // 直接返回
         std::process::exit(1);
     });
 
@@ -57,7 +57,7 @@ pub fn initialize_mdns_daemon(mut commands: Commands) {
 
     commands.insert_resource(MdnsManager { daemon, receiver });
 
-    info!("✅ mDNS Manager & Browser started");
+    info!("# mDNS Manager & Browser started");
 }
 
 // --------------- RESOURCES --------------- //
@@ -100,7 +100,7 @@ impl Default for ServiceBroadcastTimer {
 // 发布服务
 pub fn auto_publish_service(mdns_res: Res<MdnsManager>, device_metadata: Res<DeviceMetadata>) {
     let service_type = "_portalo._tcp.local.";
-    let port = 5353;
+    let port = 49527;
     let hostname_suffix = get_hostname_with_suffix(&device_metadata.hostname);
 
     if let Ok(network_interfaces) = list_afinet_netifas() {
@@ -134,9 +134,9 @@ pub fn auto_publish_service(mdns_res: Res<MdnsManager>, device_metadata: Res<Dev
 
                 // 注册
                 if let Err(e) = mdns_res.daemon.register(my_service) {
-                    error!("❌ Failed to register on {}: {}", name, e);
+                    error!("# Failed to register on {}: {}", name, e);
                 } else {
-                    info!("✨ Published Portalo on {} ({})", name, ip);
+                    info!("# Published Portalo on {} ({})", name, ip);
                 }
             }
         }
@@ -149,7 +149,7 @@ fn listen_for_service(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, t
         match event {
             // 解析
             ServiceEvent::ServiceResolved(info) => {
-                info!("❌ Service resolved: {} ", info.fullname);
+                info!("# Service resolved: {} ", info.fullname);
                 let hostname = info.get_hostname().to_string();
                 // 过滤出所有 IPv4 地址并转为字符串
                 let ips: Vec<String> = info
@@ -195,28 +195,28 @@ fn listen_for_service(mdns: Res<MdnsManager>, mut peer_list: ResMut<PeerList>, t
             }
             // 断开
             ServiceEvent::ServiceRemoved(service_type, fullname) => {
-                info!("❌ Service removed: {} (type: {})", fullname, service_type);
+                info!("# Service removed: {} (type: {})", fullname, service_type);
 
                 // 设备名
                 let device_name = extract_device_name(&fullname);
                 peer_list.peers.remove(&device_name);
-                info!("🗑️  Removed peer from list: {}", device_name);
+                info!("# Removed peer from list: {}", device_name);
             }
             // 发现
             ServiceEvent::ServiceFound(service_type, fullname) => {
-                debug!("🔍 Service found: {} (type: {})", fullname, service_type);
+                debug!("# Service found: {} (type: {})", fullname, service_type);
             }
             // 启动
             ServiceEvent::SearchStarted(service_type) => {
-                info!("▶️  Started searching for: {}", service_type);
+                info!("# Started searching for: {}", service_type);
             }
             // 停止
             ServiceEvent::SearchStopped(service_type) => {
-                info!("⏹️  Stopped searching for: {}", service_type);
+                info!("# Stopped searching for: {}", service_type);
             }
             // 其它
             _ => {
-                trace!("Received other ServiceEvent");
+                trace!("# Received other ServiceEvent");
             }
         }
     }
@@ -242,9 +242,9 @@ pub fn shutdown_service(
                     let full_name = format!("{}.{}", instance_name, service_type);
                     // 注销
                     if let Err(e) = mdns.daemon.unregister(&full_name) {
-                        error!("❌ 无法注销服务: {}", e);
+                        error!("# 无法注销服务: {}", e);
                     } else {
-                        info!("👋 服务已主动下线: {}", full_name);
+                        info!("# 服务已主动下线: {}", full_name);
                     }
                 }
             }
@@ -260,7 +260,7 @@ pub fn keep_alive_broadcast(
     device_metadata: Res<DeviceMetadata>,
 ) {
     if timer.0.tick(time.delta()).just_finished() {
-        info!("📡 Sending keep-alive broadcast...");
+        info!("# Sending keep-alive broadcast...");
 
         // 重新调用你之前定义的发布逻辑
         // 注意：mdns-sd 的 register 如果实例名相同，通常会覆盖旧的记录
@@ -280,7 +280,7 @@ fn cleanup_expired_peers(mut peer_list: ResMut<PeerList>, time: Res<Time>) {
         let is_alive = (now - info.last_seen) < timeout;
 
         if !is_alive {
-            info!("⏳ Peer timed out: {}", name);
+            info!("# Peer timed out: {}", name);
         }
         is_alive
     });
@@ -316,17 +316,17 @@ fn get_hostname_with_suffix(hostname: &str) -> String {
 
 // 从fullname中提取设备名
 fn extract_device_name(fullname: &str) -> String {
-    // 1. 获取第一个点之前的部分 (Instance Name)
+    // 获取第一个点之前的部分 (Instance Name)
     // "portalo-MyLaptop-eth0._portalo._tcp.local." -> "portalo-MyLaptop-eth0"
     let instance_name = fullname.split('.').next().unwrap_or(fullname);
 
-    // 2. 去掉自定义协议前缀 (如有)
+    // 去掉自定义协议前缀 (如有)
     // "portalo-MyLaptop-eth0" -> "MyLaptop-eth0"
     let raw_name = instance_name
         .strip_prefix("portalo-")
         .unwrap_or(instance_name);
 
-    // 3. 处理网卡后缀
+    // 处理网卡后缀
     // mDNS 注册时为了唯一性，通常会在末尾加上网卡名 (如 -eth0, -wlan0)
     // 我们寻找最后一个连字符并切分
     if let Some((name, _interface)) = raw_name.rsplit_once('-') {
