@@ -1,14 +1,13 @@
-use std::time::Duration;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::time::timeout;
 use bevy::prelude::*;
-use futures_util::StreamExt;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter, AsyncRead, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufWriter, ReadBuf};
 use tokio::runtime::Runtime;
-use tokio_util::io::ReaderStream;
 
 // 网络插件
 // --------------- PLUGIN --------------- //
@@ -33,6 +32,7 @@ impl Plugin for NetworkPlugin {
 fn setup_network_listener(runtime: Res<TokioRuntime>) {
     // 拿到 handle，它是轻量级可克隆的
     let handle = runtime.0.handle().clone();
+    // TODO: 放到配置
     let save_path = PathBuf::from("./downloads");
 
     // 使用 tokio 的 spawn，它会自动关联 Reactor
@@ -43,27 +43,27 @@ fn setup_network_listener(runtime: Res<TokioRuntime>) {
         let listener = match tokio::net::TcpListener::bind("0.0.0.0:49527").await {
             Ok(l) => l,
             Err(e) => {
-                error!("❌ 无法绑定端口 49527: {}", e);
+                error!("# 无法绑定端口 49527: {}", e);
                 return;
             }
         };
-        info!("👂 插件监听已启动: 49527");
+        info!("# 插件监听已启动: 49527");
 
         loop {
             match listener.accept().await {
                 Ok((stream, addr)) => {
-                    info!("📥 收到来自 {} 的连接请求", addr);
+                    info!("# 收到来自 {} 的连接请求", addr);
                     let path = save_path.clone();
 
                     // 关键：必须使用 handle.spawn 来启动每一个文件接收任务
                     // 这样即使主监听循环在忙，接收任务也能在线程池中并行处理
                     handle.spawn(async move {
                         if let Err(e) = start_file_receiver(stream, path).await {
-                            error!("❌ 接收文件时出错 (来自 {}): {:?}", addr, e);
+                            error!("# 接收文件时出错 (来自 {}): {:?}", addr, e);
                         }
                     });
                 }
-                Err(e) => error!("⚠️ TCP Accept Error: {}", e),
+                Err(e) => error!("# TCP Accept Error: {}", e),
             }
         }
     });
@@ -76,7 +76,7 @@ pub struct TokioRuntime(pub Runtime);
 // --------------- COMPONENTS --------------- //
 
 // --------------- SYSTEMS --------------- //
-// 接收任务的逻辑
+// 接收文件逻辑
 pub async fn start_file_receiver(
     mut stream: tokio::net::TcpStream,
     save_path: PathBuf,
@@ -104,51 +104,62 @@ pub async fn start_file_receiver(
     // 文件大小
     let file_size = stream.read_u64_le().await?;
 
-    println!("{:?}", safe_file_name);
-    println!("{}", file_size);
-
+    // TODO: 使用设置的文件夹
     // 创建文件夹及文件，并打开句柄
     tokio::fs::create_dir_all(&save_path).await?;
     let full_path = save_path.join(safe_file_name);
     let file = File::create(&full_path).await?;
     let mut writer = BufWriter::with_capacity(128 * 1024, file);
 
+    // 最后活跃时间
+    let last_active = Arc::new(AtomicU64::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs(),
+    ));
     // 零拷贝写入
     let mut progress_reader = ProgressReader {
         inner: stream.take(file_size),
         total: file_size,
         current: 0,
         last_reported: 0,
+        last_active: last_active.clone(),
         on_progress: Box::new(|c, t| {
             // TODO: 进度回调
         }),
     };
 
-    // TODO: 如果连续 30 秒没有任何数据传输，才断开
-    let copy_result = timeout(
-        Duration::from_secs(30),
-        tokio::io::copy(&mut progress_reader, &mut writer)
-    ).await;
-
-    match copy_result {
-        Ok(Ok(bytes_copied)) => {
-            // flush
+    // 使用 select 监听两个 Future
+    tokio::select! {
+        // 任务 A: 正常拷贝数据
+        res = tokio::io::copy(&mut progress_reader, &mut writer) => {
+            res?;
             writer.flush().await?;
-            info!("✅ 文件接收成功: {} ({} bytes)", file_name, bytes_copied);
+            info!("# 文件接收成功: {}", file_name);
+        }
+        // 任务 B: 监控超时
+        _ = async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let last = last_active.load(Ordering::Relaxed);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
 
-            Ok(())
-        }
-        Ok(Err(e)) => {
-            // IO 错误
-            Err(anyhow::anyhow!("IO Error during copy: {}", e))
-        }
-        Err(_) => {
-            // 超时错误
-            Err(anyhow::anyhow!("Transfer timed out: No data for 30s"))
+                if now - last > 30 {
+                    break; // 超过 30 秒没更新了，跳出循环
+                }
+            }
+        } => {
+            return Err(anyhow::anyhow!("传输超时：连续 30 秒无数据交换"));
         }
     }
+
+    Ok(())
 }
 
+// 发送文件逻辑
 pub async fn send_file_fast(dest_addr: String, file_path: String) -> anyhow::Result<()> {
     // 建立连接 (Dukto 默认端口 49527)
     let mut stream = tokio::net::TcpStream::connect(&dest_addr).await?;
@@ -166,10 +177,7 @@ pub async fn send_file_fast(dest_addr: String, file_path: String) -> anyhow::Res
     let file_name = std::path::Path::new(&file_path)
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
-
-    println!("{:?}", file_name);
-    println!("{}", file_size);
+        .ok_or_else(|| anyhow::anyhow!("无法从路径中解析有效文件名: {}", file_path))?;
 
     // 协议头: |文件名长度|文件名称|文件大小|
     stream.write_u32_le(file_name.len() as u32).await?;
@@ -178,12 +186,14 @@ pub async fn send_file_fast(dest_addr: String, file_path: String) -> anyhow::Res
     // 发送协议头
     stream.flush().await?;
 
+    let default_active = || std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     // 监控进度
     let mut progress_reader = ProgressReader {
         inner: file,
         total: file_size,
         current: 0,
         last_reported: 0,
+        last_active: default_active(),
         on_progress: Box::new(|c, t| {
             // TODO: 进度回调
         }),
@@ -192,21 +202,19 @@ pub async fn send_file_fast(dest_addr: String, file_path: String) -> anyhow::Res
     // 零拷贝发送
     let bytes_sent = tokio::io::copy(&mut progress_reader, &mut stream).await?;
 
-    info!("✅ 传输完成: {} ({} bytes)", file_name, bytes_sent);
+    info!("# 传输完成: {} ({} bytes)", file_name, bytes_sent);
     Ok(())
 }
-
 
 // 定义一个包装器，记录经过的字节数
 struct ProgressReader<R> {
     inner: R,
     total: u64,
     current: u64,
-    last_reported: u64,
-    // 传入回调或 Channel
-    on_progress: Box<dyn Fn(u64, u64) + Send + Sync>,
+    last_reported: u64,                               // 最新的进度(字节)
+    on_progress: Box<dyn Fn(u64, u64) + Send + Sync>, // 传入回调或 Channel
+    last_active: Arc<AtomicU64>,                      // 记录最后一次读到数据的时间（秒级戳）
 }
-
 
 impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
     fn poll_read(
@@ -219,13 +227,21 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
 
         if let Poll::Ready(Ok(())) = poll {
             let n = buf.filled().len() - before;
-            self.current += n as u64;
+            if n > 0 {
+                self.current += n as u64;
+                // 读到数据了，更新时间戳
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                self.last_active.store(now, Ordering::Relaxed);
 
-            // 🚀 频率控制：每增加 1MB 或者传输结束时才回调
-            // 1024 * 1024 = 1MB
-            if self.current - self.last_reported >= 1024 * 1024 || self.current == self.total {
-                self.last_reported = self.current;
-                (self.on_progress)(self.current, self.total);
+                // 频率控制：每增加 1MB 或者传输结束时才回调
+                // 1024 * 1024 = 1MB
+                if self.current - self.last_reported >= 1024 * 1024 || self.current == self.total {
+                    self.last_reported = self.current;
+                    (self.on_progress)(self.current, self.total);
+                }
             }
         }
         poll
