@@ -1,0 +1,16 @@
+[package]
+name = "portalo_ui"
+
+#使用workspace.package的值
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+#使用workspace.dependencies的依赖
+
+# portalo
+
+# Other
+bevy.workspace = true
+portalo_discovery.workspace = true
+bevy_file_dialog.workspace = true

@@ -1,10 +1,10 @@
 use bevy::prelude::*;
 
 use portalo_discovery::{
-    DeviceMetadata, PeerList, ServiceDiscoveryPlugin, auto_publish_service, initialize_mdns_daemon,
-    keep_alive_broadcast,
+    PeerList, ServiceDiscoveryPlugin, auto_publish_service, initialize_mdns_daemon,
 };
 use portalo_network::{NetworkPlugin, TokioRuntime, send_file_fast};
+use portalo_ui::UIPlugin;
 
 #[bevy_main] //安卓应用入口点
 pub fn main() {
@@ -12,57 +12,13 @@ pub fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(ServiceDiscoveryPlugin)
         .add_plugins(NetworkPlugin)
+        .add_plugins(UIPlugin)
         .add_systems(
             Startup,
-            (setup, initialize_mdns_daemon, auto_publish_service).chain(),
+            (initialize_mdns_daemon, auto_publish_service).chain(),
         )
-        .add_systems(Update, (list_interfaces, update_peer_list_ui))
+        .add_systems(Update, list_interfaces)
         .run();
-}
-
-fn setup(mut commands: Commands) {
-    info!("🚀 Portalo (Dukto Remake) Ready");
-    println!("Controls: [P] Publish Service | [L] List Interfaces");
-
-    // 2D摄像机
-    commands.spawn(Camera2d);
-
-    // ui
-    commands
-        .spawn((
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                padding: UiRect::all(Val::Px(30.0)),
-                ..default()
-            },
-            BackgroundColor(Color::srgb(0.10, 0.10, 0.10)),
-        ))
-        .with_children(|parent| {
-            // 顶部标题
-            parent.spawn((
-                Text::new("PORTALO"),
-                TextFont::from_font_size(32.0),
-                TextColor(Color::WHITE),
-                Node {
-                    margin: UiRect::bottom(Val::Px(20.0)),
-                    ..default()
-                },
-            ));
-
-            // 设备列表滚动/显示区域
-            parent.spawn((
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    flex_grow: 1.0,
-                    width: Val::Percent(100.0),
-                    row_gap: Val::Px(10.0), // 节点间距
-                    ..default()
-                },
-                PeerListContent,
-            ));
-        });
 }
 
 // 列出已发现的服务
@@ -99,101 +55,5 @@ fn list_interfaces(
                 error!("❌ Transfer failed: {}", e);
             }
         });
-    }
-}
-
-// 存储设备的唯一标识（如 hostname）
-#[derive(Component)]
-struct PeerEntry(String);
-
-// 列表滚动区域容器
-#[derive(Component)]
-struct PeerListContent;
-
-fn update_peer_list_ui(
-    mut commands: Commands,
-    peer_list: Res<PeerList>,
-    container_q: Query<Entity, With<PeerListContent>>,
-    entry_q: Query<(Entity, &PeerEntry)>,
-) {
-    let Ok(container_entity) = container_q.single() else {
-        return;
-    };
-
-    // 1. 获取当前 UI 中已有的设备 ID
-    let mut ui_peers: std::collections::HashSet<String> =
-        entry_q.iter().map(|(_, e)| e.0.clone()).collect();
-
-    // 2. 遍历资源中的 Peers
-    for (id, info) in peer_list.peers.iter() {
-        if !ui_peers.remove(id) {
-            // 如果 UI 里没有，创建它
-            let new_entry = commands
-                .spawn((
-                    PeerEntry(id.clone()),
-                    Button,
-                    Node {
-                        width: Val::Percent(100.0),
-                        height: Val::Px(70.0),
-                        padding: UiRect::horizontal(Val::Px(15.0)),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.12, 0.12, 0.12)),
-                ))
-                //.observe(
-                //    |trigger: Trigger<Pointer<Over>>, mut q: Query<&mut BackgroundColor>| {
-                //        if let Ok(mut bg) = q.get_mut(trigger.entity()) {
-                //            bg.0 = Color::srgb(0.2, 0.6, 0.2); // 悬停变绿
-                //        }
-                //    },
-                //)
-                //.observe(
-                //    |trigger: Trigger<Pointer<Out>>, mut q: Query<&mut BackgroundColor>| {
-                //        if let Ok(mut bg) = q.get_mut(trigger.entity()) {
-                //            bg.0 = Color::srgb(0.12, 0.12, 0.12); // 恢复原色
-                //        }
-                //    },
-                //)
-                .with_children(|p| {
-                    // 图标
-                    p.spawn((
-                        Node {
-                            width: Val::Px(40.0),
-                            height: Val::Px(40.0),
-                            margin: UiRect::right(Val::Px(15.0)),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb(0.3, 0.3, 0.3)),
-                    ));
-                    // 文字信息
-                    p.spawn(Node {
-                        flex_direction: FlexDirection::Column,
-                        ..default()
-                    })
-                    .with_children(|inner| {
-                        inner.spawn((
-                            Text::new(id.clone()),
-                            TextFont::from_font_size(18.0),
-                            TextColor(Color::WHITE),
-                        ));
-                        inner.spawn((
-                            Text::new(format!("IP: {}", info.ips.join(", "))),
-                            TextFont::from_font_size(12.0),
-                            TextColor(Color::srgb(0.6, 0.6, 0.6)),
-                        ));
-                    });
-                })
-                .id();
-
-            commands.entity(container_entity).add_child(new_entry);
-        }
-    }
-
-    // 3. 剩下的 ui_peers 说明已经在 mDNS 中消失，需要从 UI 删除
-    for (entity, entry) in entry_q.iter() {
-        if ui_peers.contains(&entry.0) {
-            commands.entity(entity).despawn();
-        }
     }
 }

@@ -22,6 +22,7 @@ edition = "2024"
 # portalo
 portalo_discovery.workspace = true
 portalo_network.workspace = true
+portalo_ui.workspace = true
 
 # Other
 bevy.workspace = true
@@ -33,6 +34,7 @@ local-ip-address.workspace = true
 # portalo
 portalo_discovery = { path = "crates/discovery", version = "0.0.1" }
 portalo_network = { path = "crates/network", version = "0.0.1" }
+portalo_ui = { path = "crates/ui", version = "0.0.1" }
 
 # Other
 mdns-sd = "0.18.0"
@@ -43,6 +45,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
 futures-lite= "2.6.1"
 anyhow = "1.0"
+bevy_file_dialog = "0.9.1"
 
 [workspace.dependencies.bevy]
 version = "0.18.1"
