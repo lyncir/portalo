@@ -14,3 +14,4 @@ edition.workspace = true
 bevy.workspace = true
 portalo_discovery.workspace = true
 bevy_file_dialog.workspace = true
+portalo_network.workspace = true

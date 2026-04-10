@@ -160,7 +160,10 @@ pub async fn start_file_receiver(
 }
 
 // 发送文件逻辑
-pub async fn send_file_fast(dest_addr: String, file_path: String) -> anyhow::Result<()> {
+pub async fn send_file_fast(
+    dest_addr: String,
+    file_path: impl AsRef<std::path::Path>,
+) -> anyhow::Result<()> {
     // 建立连接 (Dukto 默认端口 49527)
     let mut stream = tokio::net::TcpStream::connect(&dest_addr).await?;
 
@@ -174,10 +177,13 @@ pub async fn send_file_fast(dest_addr: String, file_path: String) -> anyhow::Res
     // 文件大小
     let file_size = metadata.len();
     // 文件名
-    let file_name = std::path::Path::new(&file_path)
+    let file_path_ref = file_path.as_ref();
+    let file_name = file_path_ref
         .file_name()
         .and_then(|n| n.to_str())
-        .ok_or_else(|| anyhow::anyhow!("无法从路径中解析有效文件名: {}", file_path))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("无法从路径中解析有效文件名: {}", file_path_ref.display())
+        })?;
 
     // 协议头: |文件名长度|文件名称|文件大小|
     stream.write_u32_le(file_name.len() as u32).await?;

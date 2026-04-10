@@ -1,10 +1,9 @@
+use bevy::input_focus::InputDispatchPlugin;
 use bevy::prelude::*;
-use bevy::{
-    input::mouse::{MouseScrollUnit, MouseWheel},
-    picking::hover::HoverMap,
-};
+use bevy::ui_widgets::{Activate, Button, UiWidgetsPlugins, observe};
 use bevy_file_dialog::prelude::*;
-use portalo_discovery::{PeerInfo, PeerList};
+use portalo_discovery::PeerList;
+use portalo_network::{TokioRuntime, send_file_fast};
 
 // UI插件
 // --------------- PLUGIN --------------- //
@@ -12,66 +11,65 @@ pub struct UIPlugin;
 
 impl Plugin for UIPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(FileDialogPlugin::new().with_pick_file::<PrintFilePath>())
+        app.init_resource::<SelectedPeer>()
+            .add_plugins((
+                UiWidgetsPlugins,
+                InputDispatchPlugin,
+                FileDialogPlugin::new().with_pick_file::<SelectedFilePath>(),
+            ))
             .add_systems(Startup, setup)
-            .add_systems(
-                Update,
-                (update_peer_list_ui, send_scroll_events, file_picked),
-            )
-            .add_observer(on_scroll_handler);
+            .add_systems(Update, (update_peer_list_ui, file_picked));
     }
 }
 
 // --------------- SETUP --------------- //
-fn setup(mut commands: Commands, mut peer_list: ResMut<PeerList>) {
+fn setup(mut commands: Commands) {
     // 2D摄像机
     commands.spawn(Camera2d);
 
     // UI
-    commands
-        .spawn(
-            // 容器: 宽度自适应
-            Node {
-                width: percent(100),
-                height: percent(100),
-                flex_direction: FlexDirection::Column,
-                margin: UiRect {
-                    left: auto(),
-                    right: auto(),
-                    top: Val::ZERO,
-                    bottom: Val::ZERO,
-                },
-                ..default()
+    commands.spawn(ui_root());
+}
+
+// --------------- UI --------------- //
+fn ui_root() -> impl Bundle {
+    (
+        // 容器: 宽度自适应
+        Node {
+            width: percent(100),
+            height: percent(100),
+            flex_direction: FlexDirection::Column,
+            margin: UiRect {
+                left: auto(),
+                right: auto(),
+                top: Val::ZERO,
+                bottom: Val::ZERO,
             },
-        )
-        .with_children(|parent| {
+            ..default()
+        },
+        children![
             // 上部分 - 标题
-            parent
-                .spawn((
-                    // 靠左
-                    Node {
-                        width: percent(100),
-                        height: px(100),
-                        flex_direction: FlexDirection::Column,
-                        justify_content: JustifyContent::Center,
-                        padding: UiRect::all(px(20)),
+            (
+                Node {
+                    width: percent(100),
+                    height: px(100),
+                    flex_direction: FlexDirection::Column,
+                    justify_content: JustifyContent::Center,
+                    padding: UiRect::all(px(20)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.2, 0.3, 0.5)),
+                children![(
+                    Text::new("Portalo"),
+                    TextFont {
+                        font_size: 32.0,
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.2, 0.3, 0.5)),
-                ))
-                .with_children(|parent| {
-                    parent.spawn((
-                        Text::new("Portalo"),
-                        TextFont {
-                            font_size: 32.0,
-                            ..default()
-                        },
-                        TextColor::WHITE,
-                    ));
-                });
-
+                    TextColor::WHITE,
+                )],
+            ),
             // 中部分 - 设备列表（可滑动）
-            parent.spawn((
+            (
                 Node {
                     width: percent(100),
                     flex_grow: 1.0,
@@ -82,66 +80,91 @@ fn setup(mut commands: Commands, mut peer_list: ResMut<PeerList>) {
                 },
                 BackgroundColor(Color::srgb(0.1, 0.1, 0.1)),
                 PeerListContent,
-            ));
-
+            ),
             // 下部分 - 设置
-            parent
-                .spawn((
-                    // 居中
-                    Node {
-                        width: percent(100),
-                        height: px(100),
-                        flex_direction: FlexDirection::Column,
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        padding: UiRect::all(px(20)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.3, 0.2, 0.2)),
-                ))
-                .with_children(|parent| {
-                    parent.spawn((
+            (
+                Node {
+                    width: percent(100),
+                    height: px(100),
+                    flex_direction: FlexDirection::Column,
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    padding: UiRect::all(px(20)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.3, 0.2, 0.2)),
+                children![
+                    // 设置文本
+                    (
                         Text::new("Settings"),
                         TextFont {
                             font_size: 32.0,
                             ..default()
                         },
                         TextColor::WHITE,
-                    ));
-                });
-        });
+                    )
+                ]
+            )
+        ],
+    )
+}
 
-    // TODO: 测试数据
-    let fake_data = [
-        ("Redmi-K60", "android", "192.168.1.5"),
-        ("ThinkPad-X1", "linux", "192.168.1.12"),
-        ("iPad-Air", "ios", "192.168.1.15"),
-        ("Gaming-PC", "windows", "192.168.1.20"),
-        ("Mac-Studio1", "macos", "192.168.1.31"),
-        ("Mac-Studio2", "macos", "192.168.1.32"),
-        ("Mac-Studio3", "macos", "192.168.1.33"),
-        ("Mac-Studio4", "macos", "192.168.1.34"),
-        ("Mac-Studio5", "macos", "192.168.1.35"),
-        ("Mac-Studio6", "macos", "192.168.1.36"),
-        ("Mac-Studio7", "macos", "192.168.1.37"),
-        ("Mac-Studio8", "macos", "192.168.1.38"),
-        ("Mac-Studio9", "macos", "192.168.1.39"),
-    ];
-    for (name, os, ip) in fake_data {
-        peer_list.peers.insert(
-            name.to_string(),
-            PeerInfo {
-                name: format!("{}.local.", name),
-                ips: vec![ip.to_string()],
-                os: os.to_string(),
-                // 给一个极大的时间戳，防止被 45s 的清理系统回收
-                last_seen: 999999.0,
-            },
-        );
-    }
+fn button(host_name: String, ips_str: String) -> impl Bundle {
+    (
+        Node {
+            width: Val::Percent(100.0),
+            height: Val::Px(70.0),
+            padding: UiRect::horizontal(Val::Px(15.0)),
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BackgroundColor(Color::srgb(0.12, 0.12, 0.12)),
+        PeerButton,
+        PeerEntry(host_name.clone()),
+        Button,
+        children![
+            // 图标
+            (
+                Node {
+                    width: Val::Px(40.0),
+                    height: Val::Px(40.0),
+                    margin: UiRect::right(Val::Px(15.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.3, 0.3, 0.3)),
+            ),
+            // 文字信息
+            (
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    ..default()
+                },
+                children![
+                    // 名字文本
+                    (
+                        Text::new(host_name.clone()),
+                        TextFont::from_font_size(18.0),
+                        TextColor(Color::WHITE),
+                    ),
+                    // IP地址文本
+                    (
+                        Text::new(format!("IP: {}", ips_str)),
+                        TextFont::from_font_size(12.0),
+                        TextColor(Color::srgb(0.6, 0.6, 0.6)),
+                    )
+                ],
+            )
+        ],
+    )
 }
 
 // --------------- RESOURCES --------------- //
+// 当前选择的主机
+#[derive(Resource, Default)]
+struct SelectedPeer(Option<String>);
+
+// 当前选择的文件
+struct SelectedFilePath;
 
 // --------------- COMPONENTS --------------- //
 // 存储设备的唯一标识（如 hostname）
@@ -151,6 +174,10 @@ struct PeerEntry(String);
 // 列表滚动区域容器
 #[derive(Component)]
 struct PeerListContent;
+
+// 列表中设备按钮
+#[derive(Component)]
+struct PeerButton;
 
 // --------------- SYSTEMS --------------- //
 fn update_peer_list_ui(
@@ -173,46 +200,9 @@ fn update_peer_list_ui(
             // 如果 UI 里没有，创建它
             let new_entry = commands
                 .spawn((
-                    PeerEntry(id.clone()),
-                    Button,
-                    Node {
-                        width: Val::Percent(100.0),
-                        height: Val::Px(70.0),
-                        padding: UiRect::horizontal(Val::Px(15.0)),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.12, 0.12, 0.12)),
+                    button(id.clone(), info.ips.join(", ")),
+                    observe(on_button_clicked),
                 ))
-                .with_children(|p| {
-                    // 图标
-                    p.spawn((
-                        Node {
-                            width: Val::Px(40.0),
-                            height: Val::Px(40.0),
-                            margin: UiRect::right(Val::Px(15.0)),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb(0.3, 0.3, 0.3)),
-                    ));
-                    // 文字信息
-                    p.spawn(Node {
-                        flex_direction: FlexDirection::Column,
-                        ..default()
-                    })
-                    .with_children(|inner| {
-                        inner.spawn((
-                            Text::new(id.clone()),
-                            TextFont::from_font_size(18.0),
-                            TextColor(Color::WHITE),
-                        ));
-                        inner.spawn((
-                            Text::new(format!("IP: {}", info.ips.join(", "))),
-                            TextFont::from_font_size(12.0),
-                            TextColor(Color::srgb(0.6, 0.6, 0.6)),
-                        ));
-                    });
-                })
                 .id();
 
             commands.entity(container_entity).add_child(new_entry);
@@ -227,73 +217,57 @@ fn update_peer_list_ui(
     }
 }
 
-const LINE_HEIGHT: f32 = 21.;
-
-/// UI 滚动事件
-#[derive(EntityEvent, Debug)]
-#[entity_event(propagate, auto_propagate)]
-struct Scroll {
-    entity: Entity,
-    delta: Vec2,
-}
-
-/// 发送滚动事件
-// TODO: 跨平台 TouchInput
-fn send_scroll_events(
-    mut mouse_wheel_reader: MessageReader<MouseWheel>,
-    hover_map: Res<HoverMap>,
+// 点击设备
+fn on_button_clicked(
+    activate: On<Activate>,
+    query: Query<&PeerEntry>,
     mut commands: Commands,
+    mut selected_peer: ResMut<SelectedPeer>,
 ) {
-    for mouse_wheel in mouse_wheel_reader.read() {
-        let mut delta = -Vec2::new(mouse_wheel.x, mouse_wheel.y);
+    // 获取目标名字
+    if let Ok(peer) = query.get(activate.entity) {
+        info!("# 准备发送文件给: {}", peer.0);
 
-        if mouse_wheel.unit == MouseScrollUnit::Line {
-            delta *= LINE_HEIGHT;
-        }
+        // 记录目标设备
+        selected_peer.0 = Some(peer.0.clone());
 
-        for pointer_map in hover_map.values() {
-            for entity in pointer_map.keys().copied() {
-                commands.trigger(Scroll { entity, delta });
-            }
-        }
+        // 打开选择文件对话框
+        commands.dialog().pick_file_path::<SelectedFilePath>();
     }
 }
 
-/// 处理滚动事件
-fn on_scroll_handler(
-    mut scroll: On<Scroll>,
-    mut query: Query<(&mut ScrollPosition, &Node, &ComputedNode)>,
+// 当前选中的文件路径
+fn file_picked(
+    mut ev_picked: MessageReader<DialogFilePicked<SelectedFilePath>>,
+    selected_peer: Res<SelectedPeer>,
+    peer_list: Res<PeerList>,
+    runtime: Res<TokioRuntime>,
 ) {
-    let Ok((mut scroll_position, node, computed)) = query.get_mut(scroll.entity) else {
-        return;
-    };
-
-    let max_offset = (computed.content_size() - computed.size()) * computed.inverse_scale_factor();
-
-    let delta = &mut scroll.delta;
-    if node.overflow.y == OverflowAxis::Scroll && delta.y != 0. {
-        let max = if delta.y > 0. {
-            scroll_position.y >= max_offset.y
-        } else {
-            scroll_position.y <= 0.
-        };
-
-        if !max {
-            scroll_position.y += delta.y;
-            delta.y = 0.;
-        }
-    }
-
-    if *delta == Vec2::ZERO {
-        scroll.propagate(false);
-    }
-}
-
-// 文件选择
-struct PrintFilePath;
-
-fn file_picked(mut ev_picked: MessageReader<DialogFilePicked<PrintFilePath>>) {
     for ev in ev_picked.read() {
-        eprintln!("File picked, path {:?}", ev.path);
+        let path_owned = ev.path.to_path_buf();
+
+        if let Some(peer_id) = &selected_peer.0 {
+            // 从 PeerList 中找到对应的 IP
+            if let Some(info) = peer_list.peers.get(peer_id) {
+                // TODO: 这里只取第一个地址
+                let target_ip = &info.ips[0];
+                info!(
+                    "# 正在发送文件 {:?} 到设备 {} (IP: {})",
+                    path_owned, peer_id, target_ip
+                );
+
+                // 发送文件
+                let dest = format!("{}:49527", target_ip);
+                let handle = runtime.0.handle().clone();
+                handle.spawn(async move {
+                    info!("# Starting transfer to {}...", dest);
+                    if let Err(e) = send_file_fast(dest, path_owned).await {
+                        error!("# Transfer failed: {}", e);
+                    }
+                });
+            }
+        } else {
+            warn!("# 选择了文件，但未找到目标设备");
+        }
     }
 }

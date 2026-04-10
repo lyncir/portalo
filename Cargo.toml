@@ -51,9 +51,31 @@ bevy_file_dialog = "0.9.1"
 version = "0.18.1"
 default-features = false
 features = [
-	"ui",
+	#"ui",
+	"default_app",
+	"default_platform",
+	"picking",
+	"ui_api",
+	"ui_bevy_render",
+	"experimental_bevy_ui_widgets",
 ]
 
+[profile.dev]
+# opt-level
+#
+# 0:   无优化
+# 1:   基础优化
+# 2:   一些优化
+# 3:   所有优化
+# "s": 针对二进制大小进行优化
+# "z": 针对二进制大小进行优化，但同时关闭循环矢量化。
+
+# 在开发模式中启用少量优化
+opt-level = 1
+
+[profile.dev.package."*"]
+# 在开发模式中对依赖包启用大量优化
+opt-level = 3
 
 [profile.release]
 # 以编译时间为代码，在发布模式中启用更多优化
