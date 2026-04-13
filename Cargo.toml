@@ -20,6 +20,7 @@ edition = "2024"
 # main使用workspace.dependencies的依赖
 
 # portalo
+portalo_core.workspace = true
 portalo_discovery.workspace = true
 portalo_network.workspace = true
 portalo_ui.workspace = true
@@ -32,6 +33,7 @@ local-ip-address.workspace = true
 # 所有依赖版本
 
 # portalo
+portalo_core = { path = "crates/core", version = "0.0.1" }
 portalo_discovery = { path = "crates/discovery", version = "0.0.1" }
 portalo_network = { path = "crates/network", version = "0.0.1" }
 portalo_ui = { path = "crates/ui", version = "0.0.1" }

@@ -9,6 +9,7 @@ edition.workspace = true
 #使用workspace.dependencies的依赖
 
 # portalo
+portalo_core.workspace = true
 
 # Other
 bevy.workspace = true

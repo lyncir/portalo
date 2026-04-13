@@ -1,5 +1,5 @@
 [package]
-name = "portalo_ui"
+name = "portalo_core"
 
 #使用workspace.package的值
 version.workspace = true
@@ -9,11 +9,7 @@ edition.workspace = true
 #使用workspace.dependencies的依赖
 
 # portalo
-portalo_core.workspace = true
-portalo_discovery.workspace = true
-portalo_network.workspace = true
 
 # Other
 bevy.workspace = true
-bevy_file_dialog.workspace = true
 tokio.workspace = true

@@ -2,8 +2,13 @@ use bevy::input_focus::InputDispatchPlugin;
 use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, Button, UiWidgetsPlugins, observe};
 use bevy_file_dialog::prelude::*;
+
+pub mod progress_bar;
+
+use portalo_core::{AppState, ProgressSender};
 use portalo_discovery::PeerList;
 use portalo_network::{TokioRuntime, send_file_fast};
+use progress_bar::ProgressBarPlugin;
 
 // UI插件
 // --------------- PLUGIN --------------- //
@@ -16,6 +21,7 @@ impl Plugin for UIPlugin {
                 UiWidgetsPlugins,
                 InputDispatchPlugin,
                 FileDialogPlugin::new().with_pick_file::<SelectedFilePath>(),
+                ProgressBarPlugin,
             ))
             .add_systems(Startup, setup)
             .add_systems(Update, (update_peer_list_ui, file_picked));
@@ -242,6 +248,8 @@ fn file_picked(
     selected_peer: Res<SelectedPeer>,
     peer_list: Res<PeerList>,
     runtime: Res<TokioRuntime>,
+    mut next_state: ResMut<NextState<AppState>>,
+    progress_sender: Res<ProgressSender>,
 ) {
     for ev in ev_picked.read() {
         let path_owned = ev.path.to_path_buf();
@@ -256,12 +264,16 @@ fn file_picked(
                     path_owned, peer_id, target_ip
                 );
 
+                // 切换到进度界面
+                next_state.set(AppState::Transfer);
+
                 // 发送文件
                 let dest = format!("{}:49527", target_ip);
                 let handle = runtime.0.handle().clone();
+                let tx = progress_sender.0.clone();
                 handle.spawn(async move {
                     info!("# Starting transfer to {}...", dest);
-                    if let Err(e) = send_file_fast(dest, path_owned).await {
+                    if let Err(e) = send_file_fast(dest, path_owned, tx).await {
                         error!("# Transfer failed: {}", e);
                     }
                 });

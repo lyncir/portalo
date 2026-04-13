@@ -8,6 +8,9 @@ use std::time::Duration;
 use tokio::fs::File;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufWriter, ReadBuf};
 use tokio::runtime::Runtime;
+use tokio::sync::mpsc;
+
+use portalo_core::{FileTransferState, ProgressReceiver, ProgressSender, TransferProgressMsg};
 
 // 网络插件
 // --------------- PLUGIN --------------- //
@@ -23,8 +26,15 @@ impl Plugin for NetworkPlugin {
             .build()
             .expect("Failed to create Tokio runtime");
 
-        app.insert_resource(TokioRuntime(runtime));
-        app.add_systems(Startup, setup_network_listener);
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        app.insert_resource(TokioRuntime(runtime))
+            .insert_resource(ProgressSender(tx))
+            .insert_resource(ProgressReceiver(rx))
+            .add_systems(
+                Startup,
+                (setup_network_listener, update_transfer_state_system),
+            );
     }
 }
 
@@ -163,6 +173,7 @@ pub async fn start_file_receiver(
 pub async fn send_file_fast(
     dest_addr: String,
     file_path: impl AsRef<std::path::Path>,
+    progress_tx: mpsc::UnboundedSender<TransferProgressMsg>,
 ) -> anyhow::Result<()> {
     // 建立连接 (Dukto 默认端口 49527)
     let mut stream = tokio::net::TcpStream::connect(&dest_addr).await?;
@@ -193,6 +204,7 @@ pub async fn send_file_fast(
     stream.flush().await?;
 
     let default_active = || std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let tx = progress_tx.clone();
     // 监控进度
     let mut progress_reader = ProgressReader {
         inner: file,
@@ -200,8 +212,11 @@ pub async fn send_file_fast(
         current: 0,
         last_reported: 0,
         last_active: default_active(),
-        on_progress: Box::new(|c, t| {
-            // TODO: 进度回调
+        on_progress: Box::new(move |c, t| {
+            let _ = tx.send(TransferProgressMsg {
+                current: c,
+                total: t,
+            });
         }),
     };
 
@@ -217,9 +232,9 @@ struct ProgressReader<R> {
     inner: R,
     total: u64,
     current: u64,
-    last_reported: u64,                               // 最新的进度(字节)
-    on_progress: Box<dyn Fn(u64, u64) + Send + Sync>, // 传入回调或 Channel
-    last_active: Arc<AtomicU64>,                      // 记录最后一次读到数据的时间（秒级戳）
+    last_reported: u64,                                         // 最新的进度(字节)
+    on_progress: Box<dyn Fn(u64, u64) + Send + Sync + 'static>, // 传入回调或 Channel
+    last_active: Arc<AtomicU64>, // 记录最后一次读到数据的时间（秒级戳）
 }
 
 impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
@@ -251,5 +266,17 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
             }
         }
         poll
+    }
+}
+
+fn update_transfer_state_system(
+    mut receiver: ResMut<ProgressReceiver>,
+    mut state: ResMut<FileTransferState>,
+) {
+    // 非阻塞地读取所有最新进度
+    while let Ok(msg) = receiver.0.try_recv() {
+        // 假设 FileTransferState 有这两个字段
+        state.bytes_transferred = msg.current;
+        state.total_bytes = msg.total;
     }
 }
