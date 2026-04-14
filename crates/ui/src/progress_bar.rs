@@ -71,7 +71,7 @@ fn ui_root() -> impl Bundle {
                             ..default()
                         },
                         BackgroundColor(Color::srgb(0.2, 0.8, 0.3)), // 绿色
-                        ProgressBarFill,
+                        ProgressBarFill { last_progress: 0.0 },
                     ),
                 ],
             ),
@@ -124,7 +124,9 @@ impl ProgressBar {
 }
 
 #[derive(Component)]
-struct ProgressBarFill;
+struct ProgressBarFill {
+    last_progress: f32,
+}
 
 #[derive(Component)]
 struct ProgressText;
@@ -179,11 +181,18 @@ fn update_transfer_state_system(
 fn update_progress_bar(
     state: Res<FileTransferState>,
     mut progress_query: Query<&mut Node, With<ProgressBarFill>>,
+    mut fill_query: Query<&mut ProgressBarFill>,
 ) {
     let progress = state.get_progress();
 
-    if let Ok(mut node) = progress_query.single_mut() {
-        node.width = Val::Percent(progress * 100.0);
+    if let Ok(mut fill) = fill_query.single_mut() {
+        if (fill.last_progress - progress).abs() > 0.001 {
+            // 0.1% 变化才更新
+            fill.last_progress = progress;
+            if let Ok(mut node) = progress_query.single_mut() {
+                node.width = Val::Percent(progress * 100.0);
+            }
+        }
     }
 }
 
@@ -198,13 +207,11 @@ fn update_progress_text(
 
     // 更新百分比和字节数
     if let Ok(mut text) = progress_text_query.single_mut() {
-        let transferred_mb = transferred as f32 / 1_000_000.0;
-        let total_mb = total as f32 / 1_000_000.0;
         text.0 = format!(
-            "{:.1}% ({:.1} MB / {:.1} MB)",
+            "{:.1}% ({} / {})",
             progress * 100.0,
-            transferred_mb,
-            total_mb
+            format_bytes(transferred),
+            format_bytes(total),
         );
     }
 
@@ -219,4 +226,17 @@ fn update_progress_text(
         };
         text.0 = format!("Speed: {:.1} MB/s{}", speed, eta);
     }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+
+    while size >= 1000.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1000.0;
+        unit_idx += 1;
+    }
+
+    format!("{:.2} {}", size, UNITS[unit_idx])
 }
