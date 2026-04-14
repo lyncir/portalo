@@ -12,9 +12,12 @@ pub enum AppState {
 // --------------- RESOURCES --------------- //
 #[derive(Resource, Default)]
 pub struct FileTransferState {
-    pub bytes_transferred: u64,                 // 已传输大小
-    pub total_bytes: u64,                       // 总大小
-    pub start_time: Option<std::time::Instant>, // 开始时间
+    pub bytes_transferred: u64, // 已传输大小
+    pub total_bytes: u64,       // 总大小
+    // 用于计算速度
+    pub last_update_time: f64, // 上次计算的时间
+    pub last_bytes: u64,       // 上次计算时的字节数
+    pub current_speed: f32,    // 最终显示的速度
 }
 
 impl FileTransferState {
@@ -22,27 +25,18 @@ impl FileTransferState {
         Self {
             bytes_transferred: 0,
             total_bytes,
-            start_time: Some(std::time::Instant::now()),
+            last_update_time: 0.0,
+            last_bytes: 0,
+            current_speed: 0.0,
         }
     }
 
+    // 当前进度
     pub fn get_progress(&self) -> f32 {
         (self.bytes_transferred as f32 / self.total_bytes as f32).clamp(0.0, 1.0)
     }
 
-    pub fn get_speed_mbps(&self) -> f32 {
-        if let Some(start_time) = self.start_time {
-            let elapsed = start_time.elapsed().as_secs_f32();
-            if elapsed > 0.1 {
-                (self.bytes_transferred as f32 / elapsed) / 1_000_000.0 // 转换为 MB/s
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        }
-    }
-
+    // 是否完成
     pub fn is_complete(&self) -> bool {
         self.bytes_transferred >= self.total_bytes
     }

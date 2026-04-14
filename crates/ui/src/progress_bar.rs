@@ -1,6 +1,6 @@
 use bevy::prelude::*;
-use portalo_core::{AppState, FileTransferState};
-use tokio::sync::mpsc;
+
+use portalo_core::{AppState, FileTransferState, ProgressReceiver};
 
 // 进度条插件
 // --------------- PLUGIN --------------- //
@@ -12,9 +12,12 @@ impl Plugin for ProgressBarPlugin {
             //.insert_resource(FileTransferState::new(100_000_000))
             .add_systems(
                 Update,
-                (update_progress_bar, update_progress_text)
-                    .chain()
-                    .run_if(in_state(AppState::Transfer)),
+                (
+                    (update_progress_bar, update_progress_text)
+                        .chain()
+                        .run_if(in_state(AppState::Transfer)),
+                    update_transfer_state_system,
+                ),
             );
     }
 }
@@ -96,9 +99,6 @@ fn ui_root() -> impl Bundle {
     )
 }
 
-#[derive(Resource)]
-pub struct ProgressReceiver(pub mpsc::Receiver<u64>); // 接收已传输字节数
-
 // --------------- COMPONENTS --------------- //
 #[derive(Component)]
 struct ProgressBar {
@@ -133,13 +133,47 @@ struct ProgressText;
 struct SpeedText;
 
 // --------------- SYSTEMS --------------- //
-fn simulate_transfer(mut state: ResMut<FileTransferState>, time: Res<Time>) {
-    // 模拟传输速度（每秒增加字节数）
-    let transfer_speed = 50_000_000.0; // 50 MB/s
-    let delta = time.delta_secs();
+fn update_transfer_state_system(
+    mut receiver: ResMut<ProgressReceiver>,
+    mut state: ResMut<FileTransferState>,
+    time: Res<Time<Real>>,
+) {
+    let mut updated = false;
 
-    state.bytes_transferred =
-        ((state.bytes_transferred as f32 + transfer_speed * delta) as u64).min(state.total_bytes);
+    // 非阻塞地读取所有最新进度
+    while let Ok(msg) = receiver.0.try_recv() {
+        // 假设 FileTransferState 有这两个字段
+        state.bytes_transferred = msg.current;
+        state.total_bytes = msg.total;
+        updated = true;
+    }
+
+    // 计算速度（每 0.5 秒计算一次，避免 UI 抖动）
+    let now = time.elapsed_secs_f64();
+    let delta_t = now - state.last_update_time;
+
+    if delta_t >= 0.5 {
+        // 判定是否已经完成
+        if state.bytes_transferred >= state.total_bytes && state.total_bytes > 0 {
+            state.current_speed = 0.0; // 传输完成，立即归零
+        } else if updated {
+            let delta_bytes = state.bytes_transferred.saturating_sub(state.last_bytes);
+            let instant_speed = (delta_bytes as f32 / 1_048_576.0) / delta_t as f32;
+
+            // 平滑滤波
+            state.current_speed = state.current_speed * 0.3 + instant_speed * 0.7;
+        } else {
+            // 没数据时衰减
+            state.current_speed *= 0.5;
+            if state.current_speed < 0.01 {
+                state.current_speed = 0.0;
+            }
+        }
+
+        // 更新记录点
+        state.last_bytes = state.bytes_transferred;
+        state.last_update_time = now;
+    }
 }
 
 fn update_progress_bar(
@@ -176,8 +210,8 @@ fn update_progress_text(
 
     // 更新速度
     if let Ok(mut text) = speed_text_query.single_mut() {
-        let speed = state.get_speed_mbps();
-        let eta = if speed > 0.0 {
+        let speed = state.current_speed;
+        let eta = if speed > 0.01 {
             let remaining = (total as f32 - transferred as f32) / 1_000_000.0 / speed;
             format!(" ETA: {:.1}s", remaining)
         } else {

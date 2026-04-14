@@ -5,7 +5,7 @@ use bevy_file_dialog::prelude::*;
 
 pub mod progress_bar;
 
-use portalo_core::{AppState, ProgressSender};
+use portalo_core::{AppState, FileTransferState, ProgressSender};
 use portalo_discovery::PeerList;
 use portalo_network::{TokioRuntime, send_file_fast};
 use progress_bar::ProgressBarPlugin;
@@ -250,6 +250,7 @@ fn file_picked(
     runtime: Res<TokioRuntime>,
     mut next_state: ResMut<NextState<AppState>>,
     progress_sender: Res<ProgressSender>,
+    mut transfer_state: ResMut<FileTransferState>,
 ) {
     for ev in ev_picked.read() {
         let path_owned = ev.path.to_path_buf();
@@ -264,6 +265,12 @@ fn file_picked(
                     path_owned, peer_id, target_ip
                 );
 
+                // 获取文件大小并存入 state
+                if let Ok(metadata) = std::fs::metadata(&path_owned) {
+                    transfer_state.total_bytes = metadata.len();
+                    transfer_state.bytes_transferred = 0;
+                    // 如果你的 state 有计时器，记得重置它来计算速度
+                }
                 // 切换到进度界面
                 next_state.set(AppState::Transfer);
 

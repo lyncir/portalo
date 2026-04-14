@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufWriter, ReadBuf};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
-use portalo_core::{FileTransferState, ProgressReceiver, ProgressSender, TransferProgressMsg};
+use portalo_core::TransferProgressMsg;
 
 // 网络插件
 // --------------- PLUGIN --------------- //
@@ -26,15 +26,8 @@ impl Plugin for NetworkPlugin {
             .build()
             .expect("Failed to create Tokio runtime");
 
-        let (tx, rx) = mpsc::unbounded_channel();
-
         app.insert_resource(TokioRuntime(runtime))
-            .insert_resource(ProgressSender(tx))
-            .insert_resource(ProgressReceiver(rx))
-            .add_systems(
-                Startup,
-                (setup_network_listener, update_transfer_state_system),
-            );
+            .add_systems(Startup, setup_network_listener);
     }
 }
 
@@ -213,6 +206,7 @@ pub async fn send_file_fast(
         last_reported: 0,
         last_active: default_active(),
         on_progress: Box::new(move |c, t| {
+            // 同步进度
             let _ = tx.send(TransferProgressMsg {
                 current: c,
                 total: t,
@@ -266,17 +260,5 @@ impl<R: AsyncRead + Unpin> AsyncRead for ProgressReader<R> {
             }
         }
         poll
-    }
-}
-
-fn update_transfer_state_system(
-    mut receiver: ResMut<ProgressReceiver>,
-    mut state: ResMut<FileTransferState>,
-) {
-    // 非阻塞地读取所有最新进度
-    while let Ok(msg) = receiver.0.try_recv() {
-        // 假设 FileTransferState 有这两个字段
-        state.bytes_transferred = msg.current;
-        state.total_bytes = msg.total;
     }
 }

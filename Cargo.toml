@@ -27,6 +27,7 @@ portalo_ui.workspace = true
 
 # Other
 bevy.workspace = true
+tokio.workspace = true
 local-ip-address.workspace = true
 
 [workspace.dependencies]
