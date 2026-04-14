@@ -33,7 +33,11 @@ impl FileTransferState {
 
     // 当前进度
     pub fn get_progress(&self) -> f32 {
-        (self.bytes_transferred as f32 / self.total_bytes as f32).clamp(0.0, 1.0)
+        if self.total_bytes == 0 {
+            0.0
+        } else {
+            (self.bytes_transferred as f32 / self.total_bytes as f32).clamp(0.0, 1.0)
+        }
     }
 
     // 是否完成

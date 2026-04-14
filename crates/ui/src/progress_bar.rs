@@ -190,7 +190,8 @@ fn update_progress_bar(
             // 0.1% 变化才更新
             fill.last_progress = progress;
             if let Ok(mut node) = progress_query.single_mut() {
-                node.width = Val::Percent(progress * 100.0);
+                let width_percent = (progress * 100.0).clamp(0.0, 100.0);
+                node.width = Val::Percent(width_percent);
             }
         }
     }
@@ -207,24 +208,31 @@ fn update_progress_text(
 
     // 更新百分比和字节数
     if let Ok(mut text) = progress_text_query.single_mut() {
-        text.0 = format!(
+        let new_text = format!(
             "{:.1}% ({} / {})",
             progress * 100.0,
             format_bytes(transferred),
             format_bytes(total),
         );
+        if text.0 != new_text {
+            text.0 = new_text;
+        }
     }
 
     // 更新速度
     if let Ok(mut text) = speed_text_query.single_mut() {
         let speed = state.current_speed;
-        let eta = if speed > 0.01 {
-            let remaining = (total as f32 - transferred as f32) / 1_000_000.0 / speed;
-            format!(" ETA: {:.1}s", remaining)
+        let new_text = if speed > 0.01 {
+            let remaining_bytes = total.saturating_sub(transferred);
+            let remaining_mb = remaining_bytes as f32 / 1_048_576.0; // 使用 1 MiB 保持一致
+            let eta = remaining_mb / speed;
+            format!("Speed: {:.1} MB/s ETA: {:.0}s", speed, eta)
         } else {
-            String::new()
+            format!("Speed: {:.1} MB/s", speed)
         };
-        text.0 = format!("Speed: {:.1} MB/s{}", speed, eta);
+        if text.0 != new_text {
+            text.0 = new_text;
+        }
     }
 }
 
