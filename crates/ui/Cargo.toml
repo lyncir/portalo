@@ -15,5 +15,12 @@ portalo_network.workspace = true
 
 # Other
 bevy.workspace = true
-bevy_file_dialog.workspace = true
 tokio.workspace = true
+local-ip-address.workspace = true
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+bevy_file_dialog.workspace = true
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"

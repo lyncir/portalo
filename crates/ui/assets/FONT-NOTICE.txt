@@ -1,0 +1,14 @@
+WenQuanYi Micro Hei (unmodified wqy-microhei.ttc), version 0.2.0-beta.
+Distributed under the Apache License 2.0; see LICENSE-Apache-2.0.txt.
+
+Copyright 2008-2009 The WenQuanYi Project Board of Trustees
+Copyright 2008-2009 Qianqian Fang and mozbug
+Based on Droid Sans Fallback, Droid Sans, and Droid Sans Mono:
+Copyright 2006-2008 Google Corporation and Steve Matteson, Ascender Corp.
+Some CJK punctuation derived from Ume-Font:
+Copyright 2003-2004 Electronic Font Open Laboratory (/efont/)
+Copyright 1990-2003 Wada Laboratory, the University of Tokyo
+
+Source: https://sourceforge.net/projects/wqy/files/wqy-microhei/0.2.0-beta/
+The bundled collection includes Latin and CJK characters so user-provided
+device and file names are not restricted to the application's own UI strings.

@@ -12,6 +12,6 @@ edition.workspace = true
 
 # Other
 bevy.workspace = true
-gethostname.workspace = true
+portalo_core.workspace = true
 mdns-sd.workspace = true
 local-ip-address.workspace = true

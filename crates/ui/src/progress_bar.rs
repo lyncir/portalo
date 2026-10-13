@@ -1,250 +1,361 @@
+use super::{Action, Intent, TransferDetails, theme::*, widgets::*};
 use bevy::prelude::*;
+use portalo_core::{AppState, FileTransferState, ProgressReceiver, TransferStatus};
 
-use portalo_core::{AppState, FileTransferState, ProgressReceiver};
-
-// 进度条插件
-// --------------- PLUGIN --------------- //
 pub struct ProgressBarPlugin;
-
 impl Plugin for ProgressBarPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::Transfer), setup)
-            //.insert_resource(FileTransferState::new(100_000_000))
             .add_systems(
                 Update,
                 (
-                    (update_progress_bar, update_progress_text)
-                        .chain()
-                        .run_if(in_state(AppState::Transfer)),
                     update_transfer_state_system,
-                ),
+                    toggle_details,
+                    render.run_if(in_state(AppState::Transfer)),
+                )
+                    .chain(),
             );
     }
 }
-
-// --------------- SETUP --------------- //
-pub fn setup(mut commands: Commands) {
-    // 进度条UI
-    commands.spawn(ui_root());
-}
-
-// --------------- UI --------------- //
-fn ui_root() -> impl Bundle {
-    (
-        // 容器
-        Node {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(20.0),
-            ..default()
-        },
-        BackgroundColor(Color::srgb(0.08, 0.09, 0.11)), // 背景颜色
-        children![
-            // 标题
-            (
-                Text::new("File Transfer Progress"),
-                TextFont {
-                    font_size: 32.0,
-                    ..default()
-                },
-                TextColor(Color::WHITE),
-            ),
-            // 进度条背景
-            (
-                // 容器
-                Node {
-                    width: Val::Px(400.0),
-                    height: Val::Px(30.0),
-                    border: UiRect::all(Val::Px(2.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgb(0.15, 0.15, 0.15)),
-                children![
-                    // 进度条填充部分
-                    (
-                        Node {
-                            width: Val::Percent(0.0),
-                            height: Val::Percent(100.0),
-                            ..default()
-                        },
-                        BackgroundColor(Color::srgb(0.2, 0.8, 0.3)), // 绿色
-                        ProgressBarFill { last_progress: 0.0 },
-                    ),
-                ],
-            ),
-            // 进度文本（百分比和字节数）
-            (
-                Text::new("0%"),
-                TextFont {
-                    font_size: 20.0,
-                    ..default()
-                },
-                TextColor(Color::WHITE),
-                ProgressText,
-            ),
-            // 速度文本
-            (
-                Text::new("Speed: 0.0 MB/s"),
-                TextFont {
-                    font_size: 16.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.7, 0.7, 0.7)),
-                SpeedText,
-            ),
-        ],
-    )
-}
-
-// --------------- COMPONENTS --------------- //
 #[derive(Component)]
-struct ProgressBar {
-    current: f32,
-    total: f32,
+struct Fill;
+#[derive(Component)]
+enum Field {
+    Status,
+    Percent,
+    Bytes,
+    Speed,
+    Error,
 }
 
-impl ProgressBar {
-    fn new(total: f32) -> Self {
-        Self {
-            current: 0.0,
-            total,
+pub(super) fn setup(mut commands: Commands, details: Res<TransferDetails>) {
+    let body = page(
+        &mut commands,
+        AppState::Transfer,
+        "文件传输",
+        "点对点发送 · 完成状态以接收方确认为准",
+    );
+    text(&mut commands, body, &details.file_name, 24.0, INK);
+    text(
+        &mut commands,
+        body,
+        format!("发送到：{}", details.peer_name.trim_end_matches(".local.")),
+        15.0,
+        MUTED,
+    );
+    for (field, value, size) in [
+        (Field::Status, "正在连接设备…", 22.0),
+        (Field::Percent, "0%", 60.0),
+    ] {
+        let entity = text(&mut commands, body, value, size, INK);
+        commands.entity(entity).insert(field);
+    }
+    let track = commands
+        .spawn((
+            Node {
+                width: percent(100),
+                height: px(10),
+                min_height: px(10),
+                ..default()
+            },
+            BackgroundColor(LINE),
+        ))
+        .id();
+    let fill = commands
+        .spawn((
+            Fill,
+            Node {
+                width: percent(0),
+                height: percent(100),
+                ..default()
+            },
+            BackgroundColor(SUCCESS),
+        ))
+        .id();
+    commands.entity(track).add_child(fill);
+    commands.entity(body).add_child(track);
+    for (field, size) in [
+        (Field::Bytes, 16.0),
+        (Field::Speed, 15.0),
+        (Field::Error, 14.0),
+    ] {
+        let entity = text(&mut commands, body, "", size, MUTED);
+        commands.entity(entity).insert(field);
+    }
+    action(
+        &mut commands,
+        body,
+        "查看 / 收起错误详情",
+        Action::ToggleDetails,
+        false,
+    );
+    action(&mut commands, body, "‹ 返回发送页面", Action::Back, true);
+}
+
+fn toggle_details(mut messages: MessageReader<Intent>, mut details: ResMut<TransferDetails>) {
+    for Intent(action) in messages.read() {
+        if matches!(action, Action::ToggleDetails) {
+            details.show_error = !details.show_error;
         }
     }
+}
 
-    fn progress(&self) -> f32 {
-        (self.current / self.total).clamp(0.0, 1.0)
-    }
-
-    fn is_complete(&self) -> bool {
-        self.current >= self.total
+fn status_text(status: &TransferStatus) -> &'static str {
+    match status {
+        TransferStatus::Idle => "准备发送",
+        TransferStatus::Connecting => "正在连接设备…",
+        TransferStatus::Sending => "正在发送，请保持设备连接",
+        TransferStatus::AwaitingConfirmation => "文件已发送，等待对方确认…",
+        TransferStatus::Complete => "传输完成，对方已确认接收",
+        TransferStatus::Failed(error) if error.contains("Select a regular file") => {
+            "暂不支持文件夹，请选择单个文件"
+        }
+        TransferStatus::Failed(_) => "发送失败，请检查设备连接和文件访问权限",
     }
 }
 
-#[derive(Component)]
-struct ProgressBarFill {
-    last_progress: f32,
+#[allow(clippy::too_many_arguments)]
+fn render(
+    mut commands: Commands,
+    state: Res<FileTransferState>,
+    details: Res<TransferDetails>,
+    theme: Res<Theme>,
+    added: Query<Entity, Added<Fill>>,
+    mut labels: Query<(&Field, &mut Text, &mut TextColor)>,
+    mut bars: Query<(&mut Node, &mut BackgroundColor), With<Fill>>,
+    buttons: Query<(Entity, &ActionButton)>,
+) {
+    if !state.is_changed() && !details.is_changed() && !theme.is_changed() && added.is_empty() {
+        return;
+    }
+    let color = match state.status {
+        TransferStatus::Complete => SUCCESS,
+        TransferStatus::Failed(_) => ERROR,
+        _ => theme.color(),
+    };
+    for (field, mut text, mut text_color) in &mut labels {
+        let value = match field {
+            Field::Status => {
+                if text_color.0 != color {
+                    text_color.0 = color;
+                }
+                status_text(&state.status).into()
+            }
+            Field::Percent => format!("{:.0}%", state.get_progress() * 100.0),
+            Field::Bytes => format!(
+                "{} / {}",
+                format_bytes(state.bytes_transferred),
+                format_bytes(state.total_bytes)
+            ),
+            Field::Speed => {
+                if state.status == TransferStatus::Sending && state.current_speed > 0.01 {
+                    let eta = state.total_bytes.saturating_sub(state.bytes_transferred) as f64
+                        / 1_048_576.0
+                        / state.current_speed as f64;
+                    format!(
+                        "速度 {:.1} MiB/s · 预计剩余 {:.0} 秒",
+                        state.current_speed, eta
+                    )
+                } else if state.is_active() {
+                    "传输过程中暂不可返回，请等待完成或超时。".into()
+                } else {
+                    "可以返回继续发送其他文件。".into()
+                }
+            }
+            Field::Error => {
+                if let TransferStatus::Failed(error) = &state.status {
+                    if details.show_error {
+                        error.clone()
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                }
+            }
+        };
+        if text.0 != value {
+            text.0 = value;
+        }
+    }
+    for (mut node, mut background) in &mut bars {
+        let width = percent(state.get_progress() * 100.0);
+        if node.width != width {
+            node.width = width;
+        }
+        if background.0 != color {
+            background.0 = color;
+        }
+    }
+    for (entity, button) in &buttons {
+        if matches!(button.0, Action::Back) {
+            if state.is_active() {
+                commands
+                    .entity(entity)
+                    .insert(bevy::ui::InteractionDisabled);
+            } else {
+                commands
+                    .entity(entity)
+                    .remove::<bevy::ui::InteractionDisabled>();
+            }
+        }
+        if matches!(button.0, Action::ToggleDetails) {
+            let failed = matches!(state.status, TransferStatus::Failed(_));
+            commands
+                .entity(entity)
+                .entry::<Node>()
+                .and_modify(move |mut node| {
+                    node.display = if failed { Display::Flex } else { Display::None };
+                });
+        }
+    }
 }
 
-#[derive(Component)]
-struct ProgressText;
-
-#[derive(Component)]
-struct SpeedText;
-
-// --------------- SYSTEMS --------------- //
 fn update_transfer_state_system(
     mut receiver: ResMut<ProgressReceiver>,
     mut state: ResMut<FileTransferState>,
     time: Res<Time<Real>>,
 ) {
-    let mut updated = false;
-
-    // 非阻塞地读取所有最新进度
-    while let Ok(msg) = receiver.0.try_recv() {
-        // 假设 FileTransferState 有这两个字段
-        state.bytes_transferred = msg.current;
-        state.total_bytes = msg.total;
-        updated = true;
+    if receiver.0.has_changed().unwrap_or(false) {
+        let msg = receiver.0.borrow_and_update().clone();
+        if msg.id == state.id {
+            state.bytes_transferred = msg.current;
+            state.total_bytes = msg.total;
+            state.status = msg.status;
+            if !state.is_active() {
+                state.current_speed = 0.0;
+            }
+        }
     }
-
-    // 计算速度（每 0.5 秒计算一次，避免 UI 抖动）
+    if !state.is_active() {
+        return;
+    }
     let now = time.elapsed_secs_f64();
-    let delta_t = now - state.last_update_time;
-
-    if delta_t >= 0.5 {
-        // 判定是否已经完成
-        if state.bytes_transferred >= state.total_bytes && state.total_bytes > 0 {
-            state.current_speed = 0.0; // 传输完成，立即归零
-        } else if updated {
-            let delta_bytes = state.bytes_transferred.saturating_sub(state.last_bytes);
-            let instant_speed = (delta_bytes as f32 / 1_048_576.0) / delta_t as f32;
-
-            // 平滑滤波
-            state.current_speed = state.current_speed * 0.3 + instant_speed * 0.7;
+    let elapsed = now - state.last_update_time;
+    if elapsed >= 0.5 {
+        let bytes = state.bytes_transferred.saturating_sub(state.last_bytes);
+        if bytes > 0 {
+            state.current_speed =
+                state.current_speed * 0.3 + (bytes as f64 / 1_048_576.0 / elapsed) as f32 * 0.7;
         } else {
-            // 没数据时衰减
             state.current_speed *= 0.5;
             if state.current_speed < 0.01 {
                 state.current_speed = 0.0;
             }
         }
-
-        // 更新记录点
         state.last_bytes = state.bytes_transferred;
         state.last_update_time = now;
     }
 }
 
-fn update_progress_bar(
-    state: Res<FileTransferState>,
-    mut progress_query: Query<&mut Node, With<ProgressBarFill>>,
-    mut fill_query: Query<&mut ProgressBarFill>,
-) {
-    let progress = state.get_progress();
-
-    if let Ok(mut fill) = fill_query.single_mut() {
-        if (fill.last_progress - progress).abs() > 0.001 {
-            // 0.1% 变化才更新
-            fill.last_progress = progress;
-            if let Ok(mut node) = progress_query.single_mut() {
-                let width_percent = (progress * 100.0).clamp(0.0, 100.0);
-                node.width = Val::Percent(width_percent);
-            }
-        }
-    }
-}
-
-fn update_progress_text(
-    state: Res<FileTransferState>,
-    mut progress_text_query: Query<&mut Text, (With<ProgressText>, Without<SpeedText>)>,
-    mut speed_text_query: Query<&mut Text, (With<SpeedText>, Without<ProgressText>)>,
-) {
-    let progress = state.get_progress();
-    let transferred = state.bytes_transferred;
-    let total = state.total_bytes;
-
-    // 更新百分比和字节数
-    if let Ok(mut text) = progress_text_query.single_mut() {
-        let new_text = format!(
-            "{:.1}% ({} / {})",
-            progress * 100.0,
-            format_bytes(transferred),
-            format_bytes(total),
-        );
-        if text.0 != new_text {
-            text.0 = new_text;
-        }
-    }
-
-    // 更新速度
-    if let Ok(mut text) = speed_text_query.single_mut() {
-        let speed = state.current_speed;
-        let new_text = if speed > 0.01 {
-            let remaining_bytes = total.saturating_sub(transferred);
-            let remaining_mb = remaining_bytes as f32 / 1_048_576.0; // 使用 1 MiB 保持一致
-            let eta = remaining_mb / speed;
-            format!("Speed: {:.1} MB/s ETA: {:.0}s", speed, eta)
-        } else {
-            format!("Speed: {:.1} MB/s", speed)
-        };
-        if text.0 != new_text {
-            text.0 = new_text;
-        }
-    }
-}
-
 fn format_bytes(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut size = bytes as f64;
-    let mut unit_idx = 0;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < units.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    format!("{size:.1} {}", units[unit])
+}
 
-    while size >= 1000.0 && unit_idx < UNITS.len() - 1 {
-        size /= 1000.0;
-        unit_idx += 1;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use portalo_core::TransferProgressMsg;
+    #[test]
+    fn speed_counts_earlier_frames_and_ignores_old_tasks() {
+        let (tx, rx) = tokio::sync::watch::channel(TransferProgressMsg::default());
+        let mut app = App::new();
+        app.insert_resource(ProgressReceiver(rx))
+            .insert_resource(FileTransferState {
+                id: 2,
+                status: TransferStatus::Sending,
+                ..default()
+            })
+            .init_resource::<Time<Real>>()
+            .add_systems(Update, update_transfer_state_system);
+        tx.send_replace(TransferProgressMsg {
+            id: 2,
+            current: 1_048_576,
+            total: 10_485_760,
+            status: TransferStatus::Sending,
+        });
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(std::time::Duration::from_millis(100));
+        app.update();
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(std::time::Duration::from_millis(400));
+        app.update();
+        assert!(app.world().resource::<FileTransferState>().current_speed > 1.0);
+        tx.send_replace(TransferProgressMsg {
+            id: 1,
+            status: TransferStatus::Complete,
+            ..default()
+        });
+        app.update();
+        assert!(!app.world().resource::<FileTransferState>().is_complete());
+        assert_eq!(
+            app.world()
+                .resource::<FileTransferState>()
+                .bytes_transferred,
+            1_048_576
+        );
+    }
+    #[test]
+    fn confirmation_has_distinct_user_status() {
+        assert_ne!(
+            status_text(&TransferStatus::AwaitingConfirmation),
+            status_text(&TransferStatus::Complete)
+        );
+        assert_eq!(format_bytes(1_048_576), "1.0 MiB");
     }
 
-    format!("{:.2} {}", size, UNITS[unit_idx])
+    #[test]
+    fn back_button_remains_disabled_until_confirmation() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<AppState>()
+            .init_resource::<TransferDetails>()
+            .init_resource::<Theme>()
+            .insert_resource(FileTransferState {
+                bytes_transferred: 100,
+                total_bytes: 100,
+                status: TransferStatus::AwaitingConfirmation,
+                ..default()
+            })
+            .add_systems(OnEnter(AppState::Transfer), setup)
+            .add_systems(Update, render.run_if(in_state(AppState::Transfer)));
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::Transfer);
+        app.update();
+        let back = app
+            .world_mut()
+            .query::<(Entity, &ActionButton)>()
+            .iter(app.world())
+            .find(|(_, button)| matches!(button.0, Action::Back))
+            .unwrap()
+            .0;
+        assert!(
+            app.world()
+                .get::<bevy::ui::InteractionDisabled>(back)
+                .is_some()
+        );
+        app.world_mut().resource_mut::<FileTransferState>().status = TransferStatus::Complete;
+        app.update();
+        assert!(
+            app.world()
+                .get::<bevy::ui::InteractionDisabled>(back)
+                .is_none()
+        );
+        assert!(
+            app.world_mut()
+                .query::<&Text>()
+                .iter(app.world())
+                .any(|text| text.0 == "传输完成，对方已确认接收")
+        );
+    }
 }

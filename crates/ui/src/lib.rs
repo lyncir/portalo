@@ -1,292 +1,311 @@
-use bevy::input_focus::InputDispatchPlugin;
-use bevy::prelude::*;
-use bevy::ui_widgets::{Activate, Button, UiWidgetsPlugins, observe};
-use bevy_file_dialog::prelude::*;
+use bevy::{
+    input_focus::{InputDispatchPlugin, tab_navigation::TabNavigationPlugin},
+    prelude::*,
+};
+use portalo_core::{AppState, FileTransferState};
+use portalo_discovery::PeerInfo;
 
+#[cfg(target_os = "android")]
+pub mod android;
+mod peers;
 pub mod progress_bar;
+mod send;
+mod settings;
+mod theme;
+mod widgets;
 
-use portalo_core::{AppState, FileTransferState, ProgressSender};
-use portalo_discovery::PeerList;
-use portalo_network::{TokioRuntime, send_file_fast};
-use progress_bar::ProgressBarPlugin;
+#[derive(Clone)]
+enum Action {
+    Open(AppState),
+    Select(String),
+    PickFile,
+    Back,
+    CopyAddresses,
+    Accent(usize),
+    ChooseDirectory,
+    #[cfg(target_os = "android")]
+    UseExternalDirectory,
+    ResetDirectory,
+    ToggleDetails,
+}
+#[derive(Message)]
+struct Intent(Action);
+#[derive(Message)]
+pub struct PickedFile {
+    pub path: Option<std::path::PathBuf>,
+}
+#[derive(Resource, Default)]
+struct SelectedPeer {
+    peer: Option<(String, PeerInfo)>,
+    picking: bool,
+}
+#[derive(Resource, Default)]
+struct TransferDetails {
+    file_name: String,
+    peer_name: String,
+    show_error: bool,
+}
 
-// UI插件
-// --------------- PLUGIN --------------- //
 pub struct UIPlugin;
-
 impl Plugin for UIPlugin {
     fn build(&self, app: &mut App) {
+        theme::install_font(app);
         app.init_resource::<SelectedPeer>()
+            .init_resource::<TransferDetails>()
+            .init_resource::<theme::Theme>()
+            .init_resource::<widgets::Feedback>()
+            .init_resource::<widgets::Dragged>()
+            .add_message::<Intent>()
+            .add_message::<PickedFile>()
             .add_plugins((
-                UiWidgetsPlugins,
                 InputDispatchPlugin,
-                FileDialogPlugin::new().with_pick_file::<SelectedFilePath>(),
-                ProgressBarPlugin,
+                TabNavigationPlugin,
+                settings::SettingsPlugin,
+                send::SendPlugin,
+                progress_bar::ProgressBarPlugin,
             ))
-            .add_systems(Startup, setup)
-            .add_systems(Update, (update_peer_list_ui, file_picked));
-    }
-}
-
-// --------------- SETUP --------------- //
-fn setup(mut commands: Commands) {
-    // 2D摄像机
-    commands.spawn(Camera2d);
-
-    // UI
-    commands.spawn(ui_root());
-}
-
-// --------------- UI --------------- //
-fn ui_root() -> impl Bundle {
-    (
-        // 容器: 宽度自适应
-        Node {
-            width: percent(100),
-            height: percent(100),
-            flex_direction: FlexDirection::Column,
-            margin: UiRect {
-                left: auto(),
-                right: auto(),
-                top: Val::ZERO,
-                bottom: Val::ZERO,
-            },
-            ..default()
-        },
-        children![
-            // 上部分 - 标题
-            (
-                Node {
-                    width: percent(100),
-                    height: px(100),
-                    flex_direction: FlexDirection::Column,
-                    justify_content: JustifyContent::Center,
-                    padding: UiRect::all(px(20)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgb(0.2, 0.3, 0.5)),
-                children![(
-                    Text::new("Portalo"),
-                    TextFont {
-                        font_size: 32.0,
-                        ..default()
-                    },
-                    TextColor::WHITE,
-                )],
-            ),
-            // 中部分 - 设备列表（可滑动）
-            (
-                Node {
-                    width: percent(100),
-                    flex_grow: 1.0,
-                    flex_direction: FlexDirection::Column,
-                    overflow: Overflow::scroll_y(), // 滑动
-                    row_gap: Val::Px(10.0),         // 节点间距
-                    ..default()
-                },
-                BackgroundColor(Color::srgb(0.1, 0.1, 0.1)),
-                PeerListContent,
-            ),
-            // 下部分 - 设置
-            (
-                Node {
-                    width: percent(100),
-                    height: px(100),
-                    flex_direction: FlexDirection::Column,
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    padding: UiRect::all(px(20)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgb(0.3, 0.2, 0.2)),
-                children![
-                    // 设置文本
-                    (
-                        Text::new("Settings"),
-                        TextFont {
-                            font_size: 32.0,
-                            ..default()
-                        },
-                        TextColor::WHITE,
-                    )
-                ]
+            .add_systems(Startup, |mut commands: Commands| {
+                commands.spawn(Camera2d);
+            })
+            .add_systems(OnEnter(AppState::Menu), peers::setup)
+            .add_systems(OnEnter(AppState::Connection), settings::connection_page)
+            .add_systems(
+                Update,
+                (
+                    navigate,
+                    peers::update,
+                    widgets::styles,
+                    theme::accent_labels,
+                    widgets::feedback,
+                    widgets::scroll,
+                    widgets::scroll_focus.after(widgets::scroll),
+                    keyboard_back,
+                ),
             )
-        ],
-    )
-}
-
-fn button(host_name: String, ips_str: String) -> impl Bundle {
-    (
-        Node {
-            width: Val::Percent(100.0),
-            height: Val::Px(70.0),
-            padding: UiRect::horizontal(Val::Px(15.0)),
-            align_items: AlignItems::Center,
-            ..default()
-        },
-        BackgroundColor(Color::srgb(0.12, 0.12, 0.12)),
-        PeerButton,
-        PeerEntry(host_name.clone()),
-        Button,
-        children![
-            // 图标
-            (
-                Node {
-                    width: Val::Px(40.0),
-                    height: Val::Px(40.0),
-                    margin: UiRect::right(Val::Px(15.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgb(0.3, 0.3, 0.3)),
-            ),
-            // 文字信息
-            (
-                Node {
-                    flex_direction: FlexDirection::Column,
-                    ..default()
-                },
-                children![
-                    // 名字文本
-                    (
-                        Text::new(host_name.clone()),
-                        TextFont::from_font_size(18.0),
-                        TextColor(Color::WHITE),
-                    ),
-                    // IP地址文本
-                    (
-                        Text::new(format!("IP: {}", ips_str)),
-                        TextFont::from_font_size(12.0),
-                        TextColor(Color::srgb(0.6, 0.6, 0.6)),
-                    )
-                ],
+            .add_systems(
+                PreUpdate,
+                widgets::normalize_focus.before(bevy::input_focus::InputFocusSystems::Dispatch),
             )
-        ],
-    )
+            .add_systems(Update, widgets::scrollbar)
+            .add_systems(Update, widgets::touch_actions)
+            .add_observer(
+                |_: On<Pointer<Press>>, mut drag: ResMut<widgets::Dragged>| {
+                    drag.0 = false;
+                },
+            );
+    }
 }
 
-// --------------- RESOURCES --------------- //
-// 当前选择的主机
-#[derive(Resource, Default)]
-struct SelectedPeer(Option<String>);
-
-// 当前选择的文件
-struct SelectedFilePath;
-
-// --------------- COMPONENTS --------------- //
-// 存储设备的唯一标识（如 hostname）
-#[derive(Component)]
-struct PeerEntry(String);
-
-// 列表滚动区域容器
-#[derive(Component)]
-struct PeerListContent;
-
-// 列表中设备按钮
-#[derive(Component)]
-struct PeerButton;
-
-// --------------- SYSTEMS --------------- //
-fn update_peer_list_ui(
-    mut commands: Commands,
-    peer_list: Res<PeerList>,
-    container_q: Query<Entity, With<PeerListContent>>,
-    entry_q: Query<(Entity, &PeerEntry)>,
+fn navigate(
+    mut intents: MessageReader<Intent>,
+    mut next: ResMut<NextState<AppState>>,
+    state: Res<State<AppState>>,
+    peers: Res<portalo_discovery::PeerList>,
+    transfer: Res<FileTransferState>,
+    mut selected: ResMut<SelectedPeer>,
+    mut feedback: ResMut<widgets::Feedback>,
 ) {
-    let Ok(container_entity) = container_q.single() else {
-        return;
-    };
-
-    // 1. 获取当前 UI 中已有的设备 ID
-    let mut ui_peers: std::collections::HashSet<String> =
-        entry_q.iter().map(|(_, e)| e.0.clone()).collect();
-
-    // 2. 遍历资源中的 Peers
-    for (id, info) in peer_list.peers.iter() {
-        if !ui_peers.remove(id) {
-            // 如果 UI 里没有，创建它
-            let new_entry = commands
-                .spawn((
-                    button(id.clone(), info.ips.join(", ")),
-                    observe(on_button_clicked),
-                ))
-                .id();
-
-            commands.entity(container_entity).add_child(new_entry);
+    for Intent(action) in intents.read() {
+        if transfer.is_active() || selected.picking {
+            if matches!(action, Action::Back) {
+                feedback.0 = "正在处理文件，请等待当前操作完成。".into();
+            }
+            continue;
         }
-    }
-
-    // 3. 剩下的 ui_peers 说明已经在 mDNS 中消失，需要从 UI 删除
-    for (entity, entry) in entry_q.iter() {
-        if ui_peers.contains(&entry.0) {
-            commands.entity(entity).despawn();
-        }
-    }
-}
-
-// 点击设备
-fn on_button_clicked(
-    activate: On<Activate>,
-    query: Query<&PeerEntry>,
-    mut commands: Commands,
-    mut selected_peer: ResMut<SelectedPeer>,
-) {
-    // 获取目标名字
-    if let Ok(peer) = query.get(activate.entity) {
-        info!("# 准备发送文件给: {}", peer.0);
-
-        // 记录目标设备
-        selected_peer.0 = Some(peer.0.clone());
-
-        // 打开选择文件对话框
-        commands.dialog().pick_file_path::<SelectedFilePath>();
-    }
-}
-
-// 当前选中的文件路径
-fn file_picked(
-    mut ev_picked: MessageReader<DialogFilePicked<SelectedFilePath>>,
-    selected_peer: Res<SelectedPeer>,
-    peer_list: Res<PeerList>,
-    runtime: Res<TokioRuntime>,
-    mut next_state: ResMut<NextState<AppState>>,
-    progress_sender: Res<ProgressSender>,
-    mut transfer_state: ResMut<FileTransferState>,
-) {
-    for ev in ev_picked.read() {
-        let path_owned = ev.path.to_path_buf();
-
-        if let Some(peer_id) = &selected_peer.0 {
-            // 从 PeerList 中找到对应的 IP
-            if let Some(info) = peer_list.peers.get(peer_id) {
-                // TODO: 这里只取第一个地址
-                let target_ip = &info.ips[0];
-                info!(
-                    "# 正在发送文件 {:?} 到设备 {} (IP: {})",
-                    path_owned, peer_id, target_ip
-                );
-
-                // 获取文件大小并存入 state
-                if let Ok(metadata) = std::fs::metadata(&path_owned) {
-                    transfer_state.total_bytes = metadata.len();
-                    transfer_state.bytes_transferred = 0;
-                    // 如果你的 state 有计时器，记得重置它来计算速度
+        match action {
+            Action::Open(page) => {
+                feedback.0.clear();
+                next.set(*page);
+            }
+            Action::Select(id) => {
+                if let Some(peer) = peers.peers.get(id) {
+                    selected.peer = Some((id.clone(), peer.clone()));
+                    feedback.0.clear();
+                    next.set(AppState::Send);
                 }
-                // 切换到进度界面
-                next_state.set(AppState::Transfer);
-
-                // 发送文件
-                let dest = format!("{}:49527", target_ip);
-                let handle = runtime.0.handle().clone();
-                let tx = progress_sender.0.clone();
-                handle.spawn(async move {
-                    info!("# Starting transfer to {}...", dest);
-                    if let Err(e) = send_file_fast(dest, path_owned, tx).await {
-                        error!("# Transfer failed: {}", e);
-                    }
+            }
+            Action::Back => {
+                feedback.0.clear();
+                next.set(match state.get() {
+                    AppState::Transfer => AppState::Send,
+                    AppState::Licenses => AppState::Setting,
+                    _ => AppState::Menu,
                 });
             }
-        } else {
-            warn!("# 选择了文件，但未找到目标设备");
+            _ => {}
         }
+    }
+}
+
+fn keyboard_back(
+    keys: Res<ButtonInput<KeyCode>>,
+    state: Res<State<AppState>>,
+    mut messages: MessageWriter<Intent>,
+) {
+    if keys.just_pressed(KeyCode::Escape) && *state.get() != AppState::Menu {
+        messages.write(Intent(Action::Back));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use portalo_discovery::PeerList;
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
+            .init_state::<AppState>()
+            .init_resource::<SelectedPeer>()
+            .init_resource::<TransferDetails>()
+            .init_resource::<FileTransferState>()
+            .init_resource::<PeerList>()
+            .init_resource::<settings::LocalDevice>()
+            .init_resource::<widgets::Feedback>()
+            .init_resource::<widgets::Dragged>()
+            .add_message::<Intent>()
+            .add_systems(OnEnter(AppState::Menu), peers::setup)
+            .add_systems(OnEnter(AppState::Send), send::setup)
+            .add_systems(OnEnter(AppState::Transfer), progress_bar::setup)
+            .add_systems(Update, (navigate, peers::update));
+        app.world_mut().resource_mut::<PeerList>().peers.insert(
+            "phone".into(),
+            PeerInfo {
+                name: "测试手机.local.".into(),
+                ips: vec!["192.168.1.2".into()],
+                os: "android".into(),
+                port: 49527,
+            },
+        );
+        app.update();
+        app
+    }
+
+    #[test]
+    fn changed_address_preserves_device_entity_and_reentry_does_not_leak() {
+        let mut app = app();
+        let first = app
+            .world_mut()
+            .query_filtered::<Entity, With<peers::DeviceRow>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut()
+            .resource_mut::<PeerList>()
+            .peers
+            .get_mut("phone")
+            .unwrap()
+            .ips = vec!["192.168.1.3".into()];
+        app.update();
+        let second = app
+            .world_mut()
+            .query_filtered::<Entity, With<peers::DeviceRow>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(first, second);
+        assert!(
+            app.world_mut()
+                .query::<&Text>()
+                .iter(app.world())
+                .any(|text| text.0.contains("192.168.1.3"))
+        );
+        let entities = app.world().entities().len();
+        for _ in 0..3 {
+            app.world_mut()
+                .write_message(Intent(Action::Select("phone".into())));
+            app.update();
+            app.update();
+            assert_eq!(
+                *app.world().resource::<State<AppState>>().get(),
+                AppState::Send
+            );
+            assert_eq!(
+                app.world_mut()
+                    .query_filtered::<Entity, With<peers::DeviceRow>>()
+                    .iter(app.world())
+                    .count(),
+                0
+            );
+            app.world_mut().write_message(Intent(Action::Back));
+            app.update();
+            app.update();
+            assert_eq!(
+                *app.world().resource::<State<AppState>>().get(),
+                AppState::Menu
+            );
+            assert_eq!(app.world().entities().len(), entities);
+        }
+    }
+
+    #[test]
+    fn active_transfer_and_file_preparation_prevent_navigation() {
+        let mut app = app();
+        app.world_mut().resource_mut::<SelectedPeer>().picking = true;
+        app.world_mut()
+            .write_message(Intent(Action::Select("phone".into())));
+        app.update();
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<AppState>>().get(),
+            AppState::Menu
+        );
+        app.world_mut().resource_mut::<SelectedPeer>().picking = false;
+        app.world_mut().resource_mut::<FileTransferState>().status =
+            portalo_core::TransferStatus::Sending;
+        app.world_mut()
+            .write_message(Intent(Action::Open(AppState::Setting)));
+        app.update();
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<AppState>>().get(),
+            AppState::Menu
+        );
+    }
+
+    #[test]
+    fn rapid_click_activates_once_without_deferred_pressed_state() {
+        use bevy::picking::{
+            backend::HitData,
+            pointer::{Location, PointerId},
+        };
+        let mut app = app();
+        let button = app
+            .world_mut()
+            .query::<(Entity, &widgets::ActionButton)>()
+            .iter(app.world())
+            .find(|(_, button)| matches!(button.0, Action::Open(AppState::Connection)))
+            .unwrap()
+            .0;
+        let window = app.world_mut().spawn_empty().id();
+        let location = Location {
+            target: bevy::camera::RenderTarget::Window(bevy::window::WindowRef::Entity(window))
+                .normalize(Some(window))
+                .unwrap(),
+            position: Vec2::ZERO,
+        };
+        let click = || {
+            Pointer::new(
+                PointerId::Mouse,
+                location.clone(),
+                Click {
+                    button: PointerButton::Primary,
+                    hit: HitData::new(window, 0.0, None, None),
+                    duration: std::time::Duration::ZERO,
+                },
+                button,
+            )
+        };
+        app.world_mut().trigger(click());
+        assert_eq!(app.world().resource::<Messages<Intent>>().len(), 1);
+        app.world_mut()
+            .entity_mut(button)
+            .insert(bevy::ui::InteractionDisabled);
+        app.world_mut().trigger(click());
+        assert_eq!(app.world().resource::<Messages<Intent>>().len(), 1);
+        app.world_mut()
+            .entity_mut(button)
+            .remove::<bevy::ui::InteractionDisabled>();
+        app.world_mut().resource_mut::<widgets::Dragged>().0 = true;
+        app.world_mut().trigger(click());
+        assert_eq!(app.world().resource::<Messages<Intent>>().len(), 1);
     }
 }
