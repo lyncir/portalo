@@ -3,7 +3,7 @@ target/
 crates/**/target
 
 # Cargo
-Cargo.lock
+# Note: Cargo.lock is tracked for reproducible application builds
 .cargo/config
 .cargo/config.toml
 

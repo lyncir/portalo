@@ -5,6 +5,7 @@ plugins {
 android {
     namespace 'org.bevyengine.portalo'
     compileSdk 34
+    ndkVersion '27.0.12077973'
 
     defaultConfig {
         applicationId "org.bevyengine.portalo"
@@ -28,9 +29,21 @@ android {
 	externalNativeBuild {
 		cmake {
 			path "CMakeLists.txt"
+			version "3.22.1"
 		}
 	}
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'

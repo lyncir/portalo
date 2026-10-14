@@ -50,3 +50,24 @@ Linux 桌面发行版构建与运行::
 
 	cargo build --release --bin portalo
 	./target/release/portalo
+
+GitHub 自动构建与发行
+--------------------
+
+推送 master/main、提交 Pull Request 或手动运行 Build and Package 工作流，
+会在 ubuntu-latest 上构建 Linux x86_64、Windows x86_64（cargo-xwin）和
+Android arm64-v8a Debug APK。推送 v* 标签时，三端全部成功后自动发布 GitHub Release。
+依赖通过仓库中的 Cargo.lock 与 --locked 锁定；Rust stable 和构建工具仍随上游更新。
+
+Linux 压缩包解压后运行 ``bash install.sh``，默认安装到 ~/.local；
+使用 root 运行则安装到 /usr/local。用户级桌面入口和图标遵循 XDG_DATA_HOME
+（默认 ~/.local/share）。桌面入口使用绝对路径，不依赖 PATH。
+终端运行 portalo 需将 ~/.local/bin 加入 PATH，也可直接运行 ~/.local/bin/portalo。
+该包是在 ubuntu-latest 上动态链接构建的普通二进制，不是通用 AppImage；
+运行系统需要兼容的 glibc、图形驱动及系统库。可通过 ``ldd portalo`` 检查缺少的库。
+
+Android APK 使用 release 优化的 Rust 库和 Gradle Debug 构建。
+android_app/debug.keystore 是公开的固定测试签名（密码 android），仅用于 Debug 包；
+后续使用该密钥构建的包可以相互覆盖安装。之前使用其他密钥签名的 APK 无法直接
+覆盖安装，迁移前请备份所需数据；卸载旧应用会清除其应用数据。
+该密钥不用于正式 Release 签名。

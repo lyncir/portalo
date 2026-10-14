@@ -9,10 +9,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # -------------------- 1. Linux 构建 (x86_64) --------------------
+  # -------------------- 1. Linux 构建与测试 (x86_64) --------------------
   build-linux:
     name: Build Linux (x86_64)
     runs-on: ubuntu-latest
@@ -31,15 +31,21 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Run unit and library tests
+        run: cargo test --locked --workspace --lib
+
       - name: Build binary
-        run: cargo build --release --bin portalo
+        run: cargo build --release --locked --bin portalo
 
       - name: Package Linux artifact
         run: |
           mkdir -p dist/portalo-linux-x86_64
-          cp target/release/portalo dist/portalo-linux-x86_64/
-          cp assets/portalo.desktop dist/portalo-linux-x86_64/ || true
-          cp assets/icon.png dist/portalo-linux-x86_64/ || true
+          cp target/release/portalo dist/portalo-linux-x86_64/portalo
+          cp assets/portalo.desktop dist/portalo-linux-x86_64/portalo.desktop
+          cp assets/icon.png dist/portalo-linux-x86_64/portalo.png
+          cp assets/install.sh dist/portalo-linux-x86_64/install.sh
+          cp README.rst dist/portalo-linux-x86_64/README.rst
+          chmod +x dist/portalo-linux-x86_64/portalo dist/portalo-linux-x86_64/install.sh
           tar -czvf portalo-linux-x86_64.tar.gz -C dist portalo-linux-x86_64
 
       - name: Upload Linux artifact
@@ -76,13 +82,14 @@ jobs:
         uses: taiki-e/install-action@cargo-xwin
 
       - name: Build Windows binary
-        run: cargo xwin build --release --target x86_64-pc-windows-msvc --bin portalo
+        run: cargo xwin build --release --locked --target x86_64-pc-windows-msvc --bin portalo
 
       - name: Package Windows artifact
         run: |
           mkdir -p dist/portalo-windows-x86_64
-          cp target/x86_64-pc-windows-msvc/release/portalo.exe dist/portalo-windows-x86_64/
-          cp assets/icon.ico dist/portalo-windows-x86_64/ || true
+          cp target/x86_64-pc-windows-msvc/release/portalo.exe dist/portalo-windows-x86_64/portalo.exe
+          cp assets/icon.ico dist/portalo-windows-x86_64/portalo.ico
+          cp README.rst dist/portalo-windows-x86_64/README.rst
           cd dist
           zip -r ../portalo-windows-x86_64.zip portalo-windows-x86_64
           cd ..
@@ -109,19 +116,13 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Setup Android NDK
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
         run: |
-          if [ -z "$ANDROID_NDK_HOME" ]; then
-            NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* 2>/dev/null | sort -V | tail -n 1)
-            if [ -n "$NDK_PATH" ]; then
-              echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
-              echo "Found Android NDK at $NDK_PATH"
-            else
-              echo "No pre-installed NDK found in $ANDROID_SDK_ROOT/ndk, installing via sdkmanager..."
-              $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "ndk;27.0.12077973"
-              echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> $GITHUB_ENV
-            fi
-          fi
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -138,13 +139,13 @@ jobs:
 
       - name: Build Android Rust shared library
         run: |
-          cargo ndk -t arm64-v8a -P 26 -o android_app/src/main/jniLibs build --release --package portalo --lib
+          cargo ndk -t arm64-v8a -P 26 -o android_app/src/main/jniLibs build --release --locked --package portalo --lib
 
       - name: Build Android Debug APK
         working-directory: android_app
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew --no-daemon assembleDebug
 
       - name: Prepare APK artifact
         run: |
@@ -163,6 +164,8 @@ jobs:
     needs: [build-linux, build-windows, build-android]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all built artifacts
         uses: actions/download-artifact@v4
@@ -176,4 +179,5 @@ jobs:
             artifacts/portalo-linux-x86_64/portalo-linux-x86_64.tar.gz
             artifacts/portalo-windows-x86_64/portalo-windows-x86_64.zip
             artifacts/portalo-android-debug/portalo-android-debug.apk
+          fail_on_unmatched_files: true
           generate_release_notes: true
