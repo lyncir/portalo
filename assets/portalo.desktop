@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Portalo
+Comment=Fast and simple LAN file transfer
+Comment[zh_CN]=快速局域网文件传输
+Exec=portalo
+Icon=portalo
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;Utility;
+Keywords=LAN;Transfer;Dukto;AirDrop;P2P;

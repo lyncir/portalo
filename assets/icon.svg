@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradient (Sleek Obsidian Slate) -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#232634"/>
+      <stop offset="35%" stop-color="#171822"/>
+      <stop offset="100%" stop-color="#0D0E13"/>
+    </linearGradient>
+
+    <!-- Bevel Chamfer Stroke for Dark Base -->
+    <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#525974" stop-opacity="0.9"/>
+      <stop offset="45%" stop-color="#2A2E3D" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#151720" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <!-- Portal Void Interior -->
+    <linearGradient id="voidGrad" x1="20%" y1="80%" x2="80%" y2="20%">
+      <stop offset="0%" stop-color="#04060A"/>
+      <stop offset="40%" stop-color="#06151E"/>
+      <stop offset="75%" stop-color="#022B36"/>
+      <stop offset="100%" stop-color="#004750"/>
+    </linearGradient>
+
+    <!-- Portal Ring Torus Gradient (Portalo Warm Orange Spectrum) -->
+    <linearGradient id="ringGrad" x1="10%" y1="90%" x2="90%" y2="10%">
+      <stop offset="0%" stop-color="#D83B01"/>
+      <stop offset="25%" stop-color="#F25022"/>
+      <stop offset="55%" stop-color="#FF7500"/>
+      <stop offset="85%" stop-color="#FFA81E"/>
+      <stop offset="100%" stop-color="#FFCE54"/>
+    </linearGradient>
+
+    <!-- Specular Highlight for Upper Rim -->
+    <linearGradient id="specGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FFA81E" stop-opacity="0"/>
+      <stop offset="45%" stop-color="#FFE8A3" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.95"/>
+    </linearGradient>
+
+    <!-- Inner Rim Cyan Accent Line -->
+    <linearGradient id="cyanRimGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00F5D4" stop-opacity="0.85"/>
+      <stop offset="50%" stop-color="#00BBF9" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#00BBF9" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- File Body Gradient -->
+    <linearGradient id="fileGrad" x1="15%" y1="0%" x2="85%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="70%" stop-color="#F4F6FB"/>
+      <stop offset="100%" stop-color="#DFE4F0"/>
+    </linearGradient>
+
+    <!-- File Fold Gradient -->
+    <linearGradient id="foldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#C5CDDE"/>
+      <stop offset="100%" stop-color="#E8EDF6"/>
+    </linearGradient>
+
+    <!-- Document Drop Shadow -->
+    <filter id="fileShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="-8" dy="16" stdDeviation="14" flood-color="#000000" flood-opacity="0.65"/>
+      <feDropShadow dx="2" dy="4" stdDeviation="5" flood-color="#FF5500" flood-opacity="0.2"/>
+    </filter>
+  </defs>
+
+  <!-- 1. Base Dark Squircle Plate (Crisp Obsidian) -->
+  <rect x="24" y="24" width="464" height="464" rx="108" ry="108" fill="url(#bgGrad)"/>
+  <rect x="24" y="24" width="464" height="464" rx="108" ry="108" fill="none" stroke="url(#borderGrad)" stroke-width="2.5"/>
+
+  <!-- 2. Ambient Network Speed Streaks (Entering portal from deep space at bottom-left) -->
+  <g opacity="0.85">
+    <path d="M 65 440 L 155 365" stroke="#FF6A00" stroke-width="5" stroke-linecap="round" opacity="0.45" stroke-dasharray="10 16"/>
+    <path d="M 105 470 L 185 400" stroke="#00F5D4" stroke-width="3.5" stroke-linecap="round" opacity="0.55" stroke-dasharray="12 18"/>
+    <path d="M 50 390 L 125 328" stroke="#FFA81E" stroke-width="3" stroke-linecap="round" opacity="0.35"/>
+  </g>
+
+  <!-- 3. THE PORTAL SYSTEM -->
+  <!-- Centered at (212, 286), rotated -28 deg -->
+  <g transform="translate(212, 286) rotate(-28)">
+    
+    <!-- 3a. Void Interior (Event Horizon) -->
+    <ellipse cx="0" cy="0" rx="132" ry="68" fill="url(#voidGrad)"/>
+
+    <!-- 3b. Concentric Discovery/Radio Waves inside Void -->
+    <ellipse cx="0" cy="0" rx="108" ry="52" fill="none" stroke="#00F5D4" stroke-width="2" opacity="0.45" stroke-dasharray="14 12 6 12"/>
+    <ellipse cx="0" cy="0" rx="76" ry="34" fill="none" stroke="#00BBF9" stroke-width="1.6" opacity="0.5" stroke-dasharray="8 8"/>
+    <ellipse cx="0" cy="0" rx="42" ry="18" fill="none" stroke="#00F5D4" stroke-width="1.6" opacity="0.6"/>
+
+    <!-- 3c. Inner Gateway Cyan Accretion Arc -->
+    <path d="M -132 0 A 132 68 0 1 1 132 0" fill="none" stroke="url(#cyanRimGrad)" stroke-width="3" opacity="0.85"/>
+
+    <!-- 3d. Outer Torus Soft Amber Halo -->
+    <ellipse cx="0" cy="0" rx="148" ry="80" fill="none" stroke="#FF5500" stroke-width="34" opacity="0.25"/>
+
+    <!-- 3e. Solid Continuous Toroidal Ring -->
+    <ellipse cx="0" cy="0" rx="148" ry="80" fill="none" stroke="url(#ringGrad)" stroke-width="28"/>
+
+    <!-- 3f. Specular Highlight on Upper Rim -->
+    <path d="M -125 -46 A 162 94 0 0 1 152 -26" fill="none" stroke="url(#specGrad)" stroke-width="3" stroke-linecap="round"/>
+    
+    <!-- 3g. Inner Rim Highlight -->
+    <ellipse cx="0" cy="0" rx="134" ry="66" fill="none" stroke="#FFA81E" stroke-width="1.5" opacity="0.65"/>
+  </g>
+
+  <!-- 4. WARP BEAM / ACCELERATION PLUME (Trailing from void center into document) -->
+  <g opacity="0.8">
+    <!-- Stream 1: Cyan Data Streak -->
+    <path d="M 185 295 L 250 235" stroke="#00F5D4" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="8 10"/>
+    <!-- Stream 2: Orange Acceleration Beam -->
+    <path d="M 160 270 L 225 210" stroke="#FF7500" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="6 8" opacity="0.7"/>
+    <!-- Stream 3: Subtle Gold Trace -->
+    <path d="M 210 320 L 260 270" stroke="#FFA81E" stroke-width="2.5" stroke-linecap="round" opacity="0.6"/>
+  </g>
+
+  <!-- 5. THE EMERGING METRO DOCUMENT -->
+  <!-- Centered at (278, 202), rotated -23 deg -->
+  <g filter="url(#fileShadow)">
+    <g transform="translate(278, 202) rotate(-23)">
+      
+      <!-- Document Outer Silhouette -->
+      <!-- Width: 144, Height: 184, Fold: 42 -->
+      <path d="M -72 -92 
+               L 30 -92 
+               L 72 -50 
+               L 72 92 
+               L -72 92 Z" 
+            fill="url(#fileGrad)" 
+            stroke="#FFFFFF" 
+            stroke-width="2.5"
+            stroke-linejoin="round"/>
+      
+      <!-- Fold Corner Drop Shadow -->
+      <path d="M 30 -92 L 30 -50 L 72 -50 Z" fill="#000000" opacity="0.14"/>
+      
+      <!-- Fold Corner Flap -->
+      <path d="M 30 -92 L 30 -50 L 72 -50 Z" 
+            fill="url(#foldGrad)" 
+            stroke="#BAC2D4" 
+            stroke-width="1.2"
+            stroke-linejoin="round"/>
+
+      <!-- Metro Accent Header Bar (Portalo Warm Orange #FF5500) -->
+      <rect x="-52" y="-64" width="62" height="10" rx="5" fill="#FF5500"/>
+      
+      <!-- Metro Data Content Lines -->
+      <rect x="-52" y="-38" width="98" height="7" rx="3.5" fill="#8895AA" opacity="0.8"/>
+      <rect x="-52" y="-19" width="80" height="7" rx="3.5" fill="#A4B0C2" opacity="0.65"/>
+      <rect x="-52" y="1" width="90" height="7" rx="3.5" fill="#A4B0C2" opacity="0.65"/>
+      <rect x="-52" y="21" width="58" height="7" rx="3.5" fill="#BCC7D6" opacity="0.55"/>
+
+      <!-- Peer / Transfer Complete Pill Badge -->
+      <g transform="translate(38, 58)">
+        <circle cx="0" cy="0" r="15" fill="#E8F9F3"/>
+        <circle cx="0" cy="0" r="12.5" fill="#00C48C"/>
+        <!-- Checkmark -->
+        <path d="M -5 0 L -1.5 3.8 L 6 -3.5" fill="none" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- 6. FOREGROUND SPARKLES & LENS FLARES -->
+  <!-- Top Right Big Star Sparkle -->
+  <g transform="translate(425, 95)">
+    <path d="M 0 -16 Q 0 0 16 0 Q 0 0 0 16 Q 0 0 -16 0 Q 0 0 0 -16 Z" fill="#FFFFFF" opacity="0.95"/>
+    <circle cx="0" cy="0" r="3.5" fill="#FFE5A3"/>
+  </g>
+
+  <!-- Cyan Sparkle (Upper Left) -->
+  <g transform="translate(105, 215)" opacity="0.85">
+    <path d="M 0 -9 Q 0 0 9 0 Q 0 0 0 9 Q 0 0 -9 0 Q 0 0 0 -9 Z" fill="#00F5D4"/>
+    <circle cx="0" cy="0" r="2" fill="#FFFFFF"/>
+  </g>
+
+  <!-- Warm Micro Particles -->
+  <circle cx="390" cy="315" r="3" fill="#FFA81E" opacity="0.8"/>
+  <circle cx="410" cy="255" r="2.2" fill="#FF7500" opacity="0.65"/>
+
+</svg>
