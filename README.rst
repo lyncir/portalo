@@ -44,6 +44,8 @@ Metro 风格 UI、快捷键、接收目录设置和构建产物说明见 UI.md�
 
 安卓“选择接收文件夹”的使用方法与 SAF 真机验证见 SAF_RECEIVE.md。
 
+应用内接收通知、进度与速度统计说明见 RECEIVE_NOTIFICATIONS.md。
+
 Linux 桌面发行版构建与运行::
 
 	cargo build --release --bin portalo

@@ -68,11 +68,12 @@ pub(super) async fn receive(
     tree: String,
     name: String,
     size: u64,
+    progress: &mut super::ReceiveProgress,
 ) -> anyhow::Result<()> {
     let (document, file) =
         tokio::task::spawn_blocking(move || Document::open(&tree, &name)).await??;
     let mut file = File::from_std(file);
-    let result = super::copy_exact(stream, &mut file, size).await;
+    let result = super::copy_exact(stream, &mut file, size, progress).await;
     drop(file);
     if let Err(error) = result {
         if let Err(cleanup) = tokio::task::spawn_blocking(move || document.abort()).await? {

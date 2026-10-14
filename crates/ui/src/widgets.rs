@@ -209,6 +209,7 @@ pub fn page(
         ))
         .id();
     commands.entity(viewport).add_child(thumb);
+    super::receive::mount(commands, column);
     let notice = commands
         .spawn((
             label("", 13.0, MUTED),
@@ -235,7 +236,16 @@ pub fn normalize_focus(mut focus: ResMut<InputFocus>, buttons: Query<(), With<Ac
 pub fn scroll_focus(
     focus: Res<InputFocus>,
     buttons: Query<(&ComputedNode, &UiGlobalTransform), With<ActionButton>>,
-    mut areas: Query<(&ComputedNode, &UiGlobalTransform, &mut ScrollPosition), With<ScrollArea>>,
+    mut areas: Query<
+        (
+            Entity,
+            &ComputedNode,
+            &UiGlobalTransform,
+            &mut ScrollPosition,
+        ),
+        With<ScrollArea>,
+    >,
+    parents: Query<&ChildOf>,
 ) {
     if !focus.is_changed() {
         return;
@@ -244,9 +254,16 @@ pub fn scroll_focus(
     let Ok((button, location)) = buttons.get(entity) else {
         return;
     };
-    let Ok((area, origin, mut scroll)) = areas.single_mut() else {
+    let Ok((area_entity, area, origin, mut scroll)) = areas.single_mut() else {
         return;
     };
+    let mut ancestor = entity;
+    while ancestor != area_entity {
+        let Ok(parent) = parents.get(ancestor) else {
+            return;
+        };
+        ancestor = parent.parent();
+    }
     let top = location.translation.y - button.size().y * 0.5;
     let bottom = location.translation.y + button.size().y * 0.5;
     let viewport_top = origin.translation.y - area.size().y * 0.5;

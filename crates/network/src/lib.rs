@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use portalo_core::receive::{MAX_ACTIVE_RECEIVES, ReceiveTransfers};
 use portalo_core::settings::{ReceiveDestination, SharedSettings};
 use portalo_core::{ReceiveFeedback, TransferProgressMsg, TransferStatus};
 use std::{
@@ -31,11 +32,14 @@ pub struct TokioRuntime(pub Runtime);
 struct ReceiveNoticeSender(watch::Sender<String>);
 #[cfg(target_os = "android")]
 mod android_saf;
+mod receive_progress;
+use receive_progress::ReceiveProgress;
 
 impl Plugin for NetworkPlugin {
     fn build(&self, app: &mut App) {
         let (notice_tx, notice_rx) = watch::channel(String::new());
         app.init_resource::<SharedSettings>()
+            .init_resource::<ReceiveTransfers>()
             .insert_resource(ReceiveNoticeSender(notice_tx))
             .insert_resource(ReceiveFeedback(notice_rx))
             .insert_resource(TokioRuntime(
@@ -61,13 +65,15 @@ fn setup_network_listener(
     runtime: Res<TokioRuntime>,
     settings: Res<SharedSettings>,
     notices: Res<ReceiveNoticeSender>,
+    transfers: Res<ReceiveTransfers>,
 ) {
     let settings = settings.clone();
     let notices = notices.0.clone();
+    let transfers = transfers.clone();
     runtime.0.spawn(async move {
         let result: anyhow::Result<()> = async {
             let listener = TcpListener::bind("0.0.0.0:49527").await?;
-            let slots = Arc::new(Semaphore::new(2));
+            let slots = Arc::new(Semaphore::new(MAX_ACTIVE_RECEIVES));
             loop {
                 let (stream, addr) = listener.accept().await?;
                 let Ok(permit) = slots.clone().try_acquire_owned() else {
@@ -78,17 +84,13 @@ fn setup_network_listener(
                     .read()
                     .expect("Settings lock")
                     .receive_destination();
-                let notices = notices.clone();
+                let transfers = transfers.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    match start_file_receiver_with_destination(stream, destination).await {
-                        Ok(()) => {
-                            notices.send_replace("文件接收完成。".into());
-                        }
-                        Err(error) => {
-                            error!("Receive from {addr}: {error:#}");
-                            notices.send_replace(format!("接收失败：{error:#}"));
-                        }
+                    if let Err(error) =
+                        start_file_receiver_tracked(stream, destination, transfers).await
+                    {
+                        error!("Receive from {addr}: {error:#}");
                     }
                 });
             }
@@ -96,6 +98,7 @@ fn setup_network_listener(
         .await;
         if let Err(error) = result {
             error!("Network listener: {error:#}");
+            notices.send_replace(format!("无法接收文件：{error:#}"));
         }
     });
 }
@@ -105,8 +108,35 @@ pub async fn start_file_receiver(stream: TcpStream, directory: PathBuf) -> anyho
 }
 
 pub async fn start_file_receiver_with_destination(
+    stream: TcpStream,
+    destination: ReceiveDestination,
+) -> anyhow::Result<()> {
+    receive_impl(stream, destination, None).await
+}
+
+pub async fn start_file_receiver_tracked(
+    stream: TcpStream,
+    destination: ReceiveDestination,
+    transfers: ReceiveTransfers,
+) -> anyhow::Result<()> {
+    receive_impl(stream, destination, Some(transfers)).await
+}
+
+async fn receive_impl(
     mut stream: TcpStream,
     destination: ReceiveDestination,
+    transfers: Option<ReceiveTransfers>,
+) -> anyhow::Result<()> {
+    let mut progress = ReceiveProgress::new(stream.peer_addr()?, transfers)?;
+    let result = receive_payload(&mut stream, destination, &mut progress).await;
+    progress.finish(result.as_ref().err().map(|error| format!("{error:#}")));
+    result
+}
+
+async fn receive_payload(
+    stream: &mut TcpStream,
+    destination: ReceiveDestination,
+    progress: &mut ReceiveProgress,
 ) -> anyhow::Result<()> {
     let (name, size) = timeout(IDLE, async {
         let mut magic = [0; 8];
@@ -125,13 +155,14 @@ pub async fn start_file_receiver_with_destination(
         Ok::<_, anyhow::Error>((name, size))
     })
     .await??;
+    progress.header(&name, size);
     match destination {
         ReceiveDestination::Directory(directory) => {
-            receive_local(&mut stream, directory, &name, size).await?
+            receive_local(stream, directory, &name, size, progress).await?
         }
         ReceiveDestination::DocumentTree(tree) => {
             #[cfg(target_os = "android")]
-            android_saf::receive(&mut stream, tree.uri, name.clone(), size).await?;
+            android_saf::receive(stream, tree.uri, name.clone(), size, progress).await?;
             #[cfg(not(target_os = "android"))]
             {
                 let _ = tree;
@@ -139,12 +170,19 @@ pub async fn start_file_receiver_with_destination(
             }
         }
     }
+    progress.saved();
     timeout(IDLE, stream.write_all(ACK)).await??;
     info!("Received {name}: {size} bytes");
     Ok(())
 }
 
-async fn copy_exact(stream: &mut TcpStream, file: &mut File, size: u64) -> anyhow::Result<()> {
+async fn copy_exact(
+    stream: &mut TcpStream,
+    file: &mut File,
+    size: u64,
+    progress: &mut ReceiveProgress,
+) -> anyhow::Result<()> {
+    progress.receiving();
     let mut buffer = vec![0; buffer_size()];
     let mut remaining = size;
     while remaining > 0 {
@@ -153,7 +191,9 @@ async fn copy_exact(stream: &mut TcpStream, file: &mut File, size: u64) -> anyho
         anyhow::ensure!(count > 0, "Incomplete file: {remaining} bytes missing");
         timeout(IDLE, file.write_all(&buffer[..count])).await??;
         remaining -= count as u64;
+        progress.advance(count as u64);
     }
+    progress.saving();
     timeout(IDLE, file.flush()).await??;
     Ok(())
 }
@@ -163,6 +203,7 @@ async fn receive_local(
     directory: PathBuf,
     name: &str,
     size: u64,
+    progress: &mut ReceiveProgress,
 ) -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&directory).await?;
     let (temporary, mut file) = loop {
@@ -180,7 +221,7 @@ async fn receive_local(
         }
     };
     let result: anyhow::Result<()> = async {
-        copy_exact(stream, &mut file, size).await?;
+        copy_exact(stream, &mut file, size, progress).await?;
         drop(file);
         // Use each platform's no-replace rename, with tempfile's fallback for
         // older kernels. Publication neither copies the payload nor overwrites.
@@ -341,6 +382,84 @@ async fn send_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portalo_core::receive::ReceivePhase;
+
+    #[tokio::test]
+    async fn tracked_receive_keeps_partial_progress_then_reports_truncation() {
+        let directory = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let ledger = ReceiveTransfers::default();
+        let tracked = ledger.clone();
+        let target = directory.path().to_path_buf();
+        let receiver = tokio::spawn(async move {
+            start_file_receiver_tracked(
+                listener.accept().await.unwrap().0,
+                ReceiveDestination::Directory(target),
+                tracked,
+            )
+            .await
+        });
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream.write_all(MAGIC).await.unwrap();
+        stream.write_u32_le(8).await.unwrap();
+        stream.write_all(b"test.bin").await.unwrap();
+        stream.write_u64_le(1024 * 1024).await.unwrap();
+        stream.write_all(&vec![7; 128 * 1024]).await.unwrap();
+        timeout(Duration::from_secs(3), async {
+            loop {
+                let (_, tasks) = ledger.snapshot_since(None).unwrap();
+                if tasks
+                    .first()
+                    .is_some_and(|task| task.received == 128 * 1024)
+                {
+                    assert_eq!(tasks[0].file_name, "test.bin");
+                    assert_eq!(tasks[0].phase, ReceivePhase::Receiving);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        stream.shutdown().await.unwrap();
+        assert!(receiver.await.unwrap().is_err());
+        let tasks = ledger.snapshot_since(None).unwrap().1;
+        assert_eq!(tasks[0].received, 128 * 1024);
+        assert!(matches!(tasks[0].phase, ReceivePhase::Failed(_)));
+        assert!(tasks[0].saved_at.is_none());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn tracked_empty_file_completes_with_source_and_correct_terminal_state() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let path = source.path().join("empty.bin");
+        tokio::fs::write(&path, []).await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let ledger = ReceiveTransfers::default();
+        let tracked = ledger.clone();
+        let directory = target.path().to_path_buf();
+        let receiver = tokio::spawn(async move {
+            start_file_receiver_tracked(
+                listener.accept().await.unwrap().0,
+                ReceiveDestination::Directory(directory),
+                tracked,
+            )
+            .await
+        });
+        let (tx, _) = watch::channel(TransferProgressMsg::default());
+        send_file_fast(vec![address], path, tx, 1).await.unwrap();
+        receiver.await.unwrap().unwrap();
+        let task = ledger.snapshot_since(None).unwrap().1.remove(0);
+        assert_eq!(task.phase, ReceivePhase::Completed);
+        assert_eq!(task.progress(), 1.0);
+        assert_eq!(task.total, Some(0));
+        assert!(task.saved_at.is_some());
+        assert!(task.source.ip().is_loopback());
+    }
 
     #[test]
     fn reserved_publication_preserves_existing_files_and_cleans_failed_reservations() {

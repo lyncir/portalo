@@ -9,6 +9,7 @@ use portalo_discovery::PeerInfo;
 pub mod android;
 mod peers;
 pub mod progress_bar;
+mod receive;
 mod send;
 mod settings;
 mod theme;
@@ -27,6 +28,7 @@ enum Action {
     UseExternalDirectory,
     ResetDirectory,
     ToggleDetails,
+    DismissReceive(u64),
 }
 #[derive(Message)]
 struct Intent(Action);
@@ -63,6 +65,7 @@ impl Plugin for UIPlugin {
                 settings::SettingsPlugin,
                 send::SendPlugin,
                 progress_bar::ProgressBarPlugin,
+                receive::ReceivePlugin,
             ))
             .add_systems(Startup, |mut commands: Commands| {
                 commands.spawn(Camera2d);
@@ -74,7 +77,7 @@ impl Plugin for UIPlugin {
                 (
                     navigate,
                     peers::update,
-                    widgets::styles,
+                    widgets::styles.after(receive::ReceiveSystems),
                     theme::accent_labels,
                     widgets::feedback,
                     widgets::scroll,

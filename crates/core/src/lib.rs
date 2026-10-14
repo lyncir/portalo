@@ -80,4 +80,5 @@ pub struct ReceiveFeedback(pub watch::Receiver<String>);
 #[cfg(target_os = "android")]
 pub mod android_storage;
 pub mod device;
+pub mod receive;
 pub mod settings;
