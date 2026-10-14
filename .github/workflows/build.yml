@@ -23,7 +23,10 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+          sudo apt-get install -y \
+            g++ pkg-config libx11-dev libasound2-dev libudev-dev \
+            libxkbcommon-x11-0 libwayland-dev
+          pkg-config --modversion wayland-client
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -135,7 +138,7 @@ jobs:
           key: android-arm64
 
       - name: Install cargo-ndk
-        uses: taiki-e/install-action@cargo-ndk
+        run: cargo install cargo-ndk --locked
 
       - name: Build Android Rust shared library
         run: |
