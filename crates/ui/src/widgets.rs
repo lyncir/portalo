@@ -2,11 +2,11 @@ use super::{Action, Intent, theme::*};
 use bevy::picking::hover::Hovered;
 use bevy::{
     input_focus::{
-        InputFocus,
+        FocusCause, InputFocus,
         tab_navigation::{TabGroup, TabIndex},
     },
     prelude::*,
-    ui::InteractionDisabled,
+    ui::{InteractionDisabled, Pressed},
     ui_widgets::{Button, observe},
 };
 
@@ -49,6 +49,7 @@ pub fn touch_actions(
     mut gestures: Local<TouchGestures>,
     mut messages: MessageWriter<Intent>,
     mut focus: ResMut<InputFocus>,
+    stack: Query<&bevy::ui::ComputedStackIndex>,
 ) {
     use bevy::input::touch::TouchPhase;
     for event in events.read() {
@@ -61,7 +62,7 @@ pub fn touch_actions(
             .filter(|(_, _, node, transform, clip, disabled)| {
                 if *disabled
                     || node.is_empty()
-                    || clip.is_some_and(|clip| !clip.clip.contains(position))
+                    || clip.is_some_and(|clip| !clip.contains_point(position))
                 {
                     return false;
                 }
@@ -70,7 +71,7 @@ pub fn touch_actions(
                     (local.abs().cmple(node.size() * 0.5)).all()
                 })
             })
-            .max_by_key(|(_, _, node, _, _, _)| node.stack_index())
+            .max_by_key(|(entity, _, _, _, _, _)| stack.get(*entity).map_or(0, |index| index.0))
             .map(|(entity, _, _, _, _, _)| entity);
         match event.phase {
             TouchPhase::Started => {
@@ -91,7 +92,7 @@ pub fn touch_actions(
                     && pressed == target
                     && let Ok((entity, button, _, _, _, false)) = buttons.get(pressed.unwrap())
                 {
-                    focus.0 = Some(entity);
+                    focus.set(entity, FocusCause::Pressed);
                     messages.write(Intent(button.0.clone()));
                 }
             }
@@ -115,6 +116,7 @@ pub fn page(
             Node {
                 width: percent(100),
                 height: percent(100),
+                min_height: px(0),
                 justify_content: JustifyContent::Center,
                 ..default()
             },
@@ -128,9 +130,10 @@ pub fn page(
                 width: percent(100),
                 max_width: px(780),
                 height: percent(100),
-                padding: UiRect::all(px(20)),
+                min_height: px(0),
+                padding: UiRect::all(rem(1.25)),
                 flex_direction: FlexDirection::Column,
-                row_gap: px(12),
+                row_gap: rem(0.75),
                 ..default()
             },
         ))
@@ -141,7 +144,7 @@ pub fn page(
             Node {
                 flex_direction: FlexDirection::Column,
                 flex_shrink: 0.0,
-                row_gap: px(4),
+                row_gap: rem(0.25),
                 ..default()
             },
             children![
@@ -154,6 +157,9 @@ pub fn page(
     let viewport = commands
         .spawn(Node {
             width: percent(100),
+            // Allocate only the space left after header/receive cards. An auto
+            // basis can use the scroll child's intrinsic text height in 0.20.
+            flex_basis: px(0),
             min_height: px(0),
             flex_grow: 1.0,
             ..default()
@@ -171,13 +177,13 @@ pub fn page(
                 min_height: px(0),
                 flex_grow: 1.0,
                 flex_direction: FlexDirection::Column,
-                row_gap: px(14),
+                row_gap: rem(0.875),
                 overflow: Overflow::scroll_y(),
                 ..default()
             },
         ))
         .observe(
-            |drag: On<Pointer<Drag>>,
+            |drag: On<PointerDrag>,
              scale: Res<UiScale>,
              mut dragged: ResMut<Dragged>,
              mut areas: Query<(&mut ScrollPosition, &ComputedNode), With<ScrollArea>>| {
@@ -226,10 +232,10 @@ pub fn page(
 }
 
 pub fn normalize_focus(mut focus: ResMut<InputFocus>, buttons: Query<(), With<ActionButton>>) {
-    if let Some(entity) = focus.0
+    if let Some(entity) = focus.get()
         && !buttons.contains(entity)
     {
-        focus.0 = None;
+        focus.clear();
     }
 }
 
@@ -250,7 +256,7 @@ pub fn scroll_focus(
     if !focus.is_changed() {
         return;
     }
-    let Some(entity) = focus.0 else { return };
+    let Some(entity) = focus.get() else { return };
     let Ok((button, location)) = buttons.get(entity) else {
         return;
     };
@@ -331,20 +337,21 @@ pub fn action(
     primary: bool,
 ) -> Entity {
     // Keep the accessible Button role, but dispatch clicks directly rather than
-    // depending on the experimental widget's deferred Pressed component. A fast
+    // depending on the widget's deferred Pressed component. A fast
     // press/release can otherwise be processed together by the low-power loop.
+    let (text, font, color, layout) =
+        label(caption, 17.0, if primary { Color::WHITE } else { INK });
     let entity = commands
         .spawn((
             Button,
-            Interaction::None,
             Hovered::default(),
             TabIndex(0),
             ActionButton(intent, primary),
             Node {
-                min_height: px(52),
+                min_height: rem(3.25),
                 width: percent(100),
                 flex_shrink: 0.0,
-                padding: UiRect::all(px(12)),
+                padding: UiRect::all(rem(0.75)),
                 border: UiRect::all(px(2)),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
@@ -353,10 +360,16 @@ pub fn action(
             BackgroundColor(Color::WHITE),
             BorderColor::all(LINE),
             children![(
-                label(caption, 17.0, if primary { Color::WHITE } else { INK }),
+                (
+                    text,
+                    font,
+                    color,
+                    layout.with_justify(bevy::text::Justify::Center)
+                ),
                 ButtonCaption,
                 Pickable::IGNORE,
                 Node {
+                    width: percent(100),
                     min_width: px(0),
                     max_width: percent(100),
                     flex_shrink: 1.0,
@@ -364,7 +377,7 @@ pub fn action(
                 }
             )],
             observe(
-                |mut event: On<Pointer<Click>>,
+                |mut event: On<PointerClick>,
                  query: Query<(&ActionButton, Has<InteractionDisabled>)>,
                  dragged: Res<Dragged>,
                  mut messages: MessageWriter<Intent>| {
@@ -372,7 +385,7 @@ pub fn action(
                         && !dragged.0
                         && event.button == PointerButton::Primary
                         && !matches!(
-                            event.pointer_id,
+                            event.pointer.id,
                             bevy::picking::pointer::PointerId::Touch(_)
                         )
                     {
@@ -382,11 +395,11 @@ pub fn action(
                 },
             ),
             observe(
-                |event: On<Pointer<Press>>,
+                |event: On<PointerPress>,
                  mut focus: ResMut<InputFocus>,
                  query: Query<Has<InteractionDisabled>, With<ActionButton>>| {
                     if query.get(event.entity) == Ok(false) {
-                        focus.0 = Some(event.entity);
+                        focus.set(event.entity, FocusCause::Pressed);
                     }
                 },
             ),
@@ -420,7 +433,7 @@ pub fn styles(
         Entity,
         &ActionButton,
         &Hovered,
-        &Interaction,
+        Has<Pressed>,
         Has<InteractionDisabled>,
         &mut BackgroundColor,
         &mut BorderColor,
@@ -438,7 +451,7 @@ pub fn styles(
         };
         let color = if disabled {
             Color::srgb(0.65, 0.65, 0.63)
-        } else if *pressed == Interaction::Pressed {
+        } else if pressed {
             base.mix(&INK, 0.22)
         } else if hover.0 {
             if button.1 {
@@ -452,7 +465,7 @@ pub fn styles(
         if background.0 != color {
             background.0 = color;
         }
-        let outline = BorderColor::all(if focus.0 == Some(entity) && !disabled {
+        let outline = BorderColor::all(if focus.get() == Some(entity) && !disabled {
             INK
         } else if button.1 {
             color
@@ -561,11 +574,24 @@ mod tests {
             force: None,
         };
         let center = Vec2::new(50.0, 50.0);
+        // In 0.20 clips are local-space rectangles. The physical touch at
+        // (100, 100) is inside this translated clip, despite being outside rect.
+        app.world_mut()
+            .entity_mut(button)
+            .insert(CalculatedClip::Rects(
+                [CalculatedClipRect {
+                    rect: Rect::from_corners(Vec2::ZERO, Vec2::splat(20.0)),
+                    world_to_clip_local: bevy::math::Affine2::from_translation(Vec2::splat(-90.0)),
+                }]
+                .into_iter()
+                .collect(),
+            ));
         app.world_mut()
             .write_message(input(TouchPhase::Started, center));
         app.world_mut()
             .write_message(input(TouchPhase::Ended, center));
         app.update();
+        assert_eq!(app.world().resource::<InputFocus>().get(), Some(button));
         assert_eq!(
             app.world_mut()
                 .resource_mut::<Messages<Intent>>()
@@ -605,9 +631,14 @@ mod tests {
         app.world_mut()
             .entity_mut(button)
             .remove::<InteractionDisabled>()
-            .insert(CalculatedClip {
-                clip: Rect::from_corners(Vec2::ZERO, Vec2::splat(10.0)),
-            });
+            .insert(CalculatedClip::Rects(
+                [CalculatedClipRect {
+                    rect: Rect::from_corners(Vec2::ZERO, Vec2::splat(10.0)),
+                    ..default()
+                }]
+                .into_iter()
+                .collect(),
+            ));
         app.world_mut()
             .write_message(input(TouchPhase::Started, center));
         app.world_mut()

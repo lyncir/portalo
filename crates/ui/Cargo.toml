@@ -4,6 +4,7 @@ name = "portalo_ui"
 #使用workspace.package的值
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 #使用workspace.dependencies的依赖
@@ -19,7 +20,7 @@ tokio.workspace = true
 local-ip-address.workspace = true
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-bevy_file_dialog.workspace = true
+rfd.workspace = true
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
 [target.'cfg(target_os = "android")'.dependencies]

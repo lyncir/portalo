@@ -7,6 +7,8 @@ use portalo_discovery::PeerInfo;
 
 #[cfg(target_os = "android")]
 pub mod android;
+#[cfg(not(target_os = "android"))]
+mod dialog;
 mod peers;
 pub mod progress_bar;
 mod receive;
@@ -52,6 +54,14 @@ pub struct UIPlugin;
 impl Plugin for UIPlugin {
     fn build(&self, app: &mut App) {
         theme::install_font(app);
+        // Included in DefaultPlugins since Bevy 0.19; headless UI tests still
+        // need it when they install a smaller plugin set.
+        if !app.is_plugin_added::<InputDispatchPlugin>() {
+            app.add_plugins(InputDispatchPlugin);
+        }
+        if !app.is_plugin_added::<bevy::ui_widgets::ButtonPlugin>() {
+            app.add_plugins(bevy::ui_widgets::ButtonPlugin);
+        }
         app.init_resource::<SelectedPeer>()
             .init_resource::<TransferDetails>()
             .init_resource::<theme::Theme>()
@@ -60,7 +70,6 @@ impl Plugin for UIPlugin {
             .add_message::<Intent>()
             .add_message::<PickedFile>()
             .add_plugins((
-                InputDispatchPlugin,
                 TabNavigationPlugin,
                 settings::SettingsPlugin,
                 send::SendPlugin,
@@ -91,11 +100,9 @@ impl Plugin for UIPlugin {
             )
             .add_systems(Update, widgets::scrollbar)
             .add_systems(Update, widgets::touch_actions)
-            .add_observer(
-                |_: On<Pointer<Press>>, mut drag: ResMut<widgets::Dragged>| {
-                    drag.0 = false;
-                },
-            );
+            .add_observer(|_: On<PointerPress>, mut drag: ResMut<widgets::Dragged>| {
+                drag.0 = false;
+            });
     }
 }
 
@@ -211,7 +218,12 @@ mod tests {
                 .iter(app.world())
                 .any(|text| text.0.contains("192.168.1.3"))
         );
-        let entities = app.world().entities().len();
+        // Resources now also occupy entities, and state transitions can lazily
+        // initialize them. Count the page nodes and observers we actually own.
+        let mut ui_entities = app
+            .world_mut()
+            .query_filtered::<Entity, Or<(With<Node>, With<Observer>)>>();
+        let entities = ui_entities.iter(app.world()).count();
         for _ in 0..3 {
             app.world_mut()
                 .write_message(Intent(Action::Select("phone".into())));
@@ -235,7 +247,7 @@ mod tests {
                 *app.world().resource::<State<AppState>>().get(),
                 AppState::Menu
             );
-            assert_eq!(app.world().entities().len(), entities);
+            assert_eq!(ui_entities.iter(app.world()).count(), entities);
         }
     }
 
@@ -285,17 +297,13 @@ mod tests {
                 .unwrap(),
             position: Vec2::ZERO,
         };
-        let click = || {
-            Pointer::new(
-                PointerId::Mouse,
-                location.clone(),
-                Click {
-                    button: PointerButton::Primary,
-                    hit: HitData::new(window, 0.0, None, None),
-                    duration: std::time::Duration::ZERO,
-                },
-                button,
-            )
+        let click = || PointerClick {
+            pointer: Pointer::new(PointerId::Mouse, location.clone()),
+            entity: button,
+            button: PointerButton::Primary,
+            hit: HitData::new(window, 0.0, None, None),
+            duration: std::time::Duration::ZERO,
+            count: 1,
         };
         app.world_mut().trigger(click());
         assert_eq!(app.world().resource::<Messages<Intent>>().len(), 1);

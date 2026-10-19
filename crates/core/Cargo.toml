@@ -4,6 +4,7 @@ name = "portalo_core"
 #使用workspace.package的值
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 #使用workspace.dependencies的依赖

@@ -1,13 +1,11 @@
+#[cfg(not(target_os = "android"))]
+use super::dialog::{self, Dialogs};
 use super::{Action, Intent, PickedFile, SelectedPeer, TransferDetails, theme::*, widgets::*};
 use bevy::prelude::*;
-#[cfg(not(target_os = "android"))]
-use bevy_file_dialog::prelude::*;
 use portalo_core::{AppState, FileTransferState, ProgressSender, TransferStatus};
 use portalo_network::{TokioRuntime, send_file_fast};
 
 pub struct SendPlugin;
-#[cfg(not(target_os = "android"))]
-struct FileSelection;
 #[derive(Component)]
 struct PickerStatus;
 
@@ -24,12 +22,9 @@ impl Plugin for SendPlugin {
                 .chain(),
         );
         #[cfg(not(target_os = "android"))]
-        app.add_plugins(
-            FileDialogPlugin::new()
-                .with_pick_file::<FileSelection>()
-                .with_pick_directory::<super::settings::DirectorySelection>(),
-        )
-        .add_systems(Update, desktop_picked.before(picked));
+        app.init_resource::<Dialogs>()
+            .add_message::<dialog::DirectoryPicked>()
+            .add_systems(Update, dialog::poll.before(picked));
         #[cfg(target_os = "android")]
         app.add_systems(
             Update,
@@ -95,7 +90,7 @@ pub(super) fn setup(mut commands: Commands, selected: Res<SelectedPeer>) {
 fn pick_action(
     mut intents: MessageReader<Intent>,
     mut selected: ResMut<SelectedPeer>,
-    mut commands: Commands,
+    #[cfg(not(target_os = "android"))] mut dialogs: ResMut<Dialogs>,
     state: Res<State<AppState>>,
 ) {
     for Intent(intent) in intents.read() {
@@ -105,10 +100,9 @@ fn pick_action(
         }
         selected.picking = true;
         #[cfg(not(target_os = "android"))]
-        commands.dialog().pick_file_path::<FileSelection>();
+        dialogs.file();
         #[cfg(target_os = "android")]
         {
-            let _ = &mut commands;
             super::android::pick_file();
         }
     }
@@ -142,22 +136,6 @@ fn picker_status(
                     .remove::<bevy::ui::InteractionDisabled>();
             }
         }
-    }
-}
-
-#[cfg(not(target_os = "android"))]
-fn desktop_picked(
-    mut input: MessageReader<DialogFilePicked<FileSelection>>,
-    mut cancelled: MessageReader<DialogFilePickCanceled<FileSelection>>,
-    mut output: MessageWriter<PickedFile>,
-) {
-    for event in input.read() {
-        output.write(PickedFile {
-            path: Some(event.path.clone()),
-        });
-    }
-    for _ in cancelled.read() {
-        output.write(PickedFile { path: None });
     }
 }
 

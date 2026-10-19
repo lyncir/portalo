@@ -4,6 +4,7 @@ name = "portalo"
 #使用workspace.package的值
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # 工作区
 [workspace]
@@ -15,6 +16,7 @@ members = ["crates/*"]
 version = "0.0.1"
 # rust版本
 edition = "2024"
+rust-version = "1.97.1"
 
 [dependencies]
 # main使用workspace.dependencies的依赖
@@ -45,10 +47,10 @@ local-ip-address = "0.6.10"
 gethostname = "1.1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "io-util", "sync", "time", "macros"] }
 anyhow = "1.0"
-bevy_file_dialog = "0.9.1"
+rfd = "0.15"
 
 [workspace.dependencies.bevy]
-version = "0.18.1"
+version = "0.20.0"
 default-features = false
 features = [
 	#"ui",
@@ -57,7 +59,7 @@ features = [
 	"picking",
 	"ui_api",
 	"ui_bevy_render",
-	"experimental_bevy_ui_widgets",
+	"bevy_ui_widgets",
 ]
 
 [profile.dev]

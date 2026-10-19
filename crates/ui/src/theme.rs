@@ -25,20 +25,25 @@ impl Theme {
 }
 
 pub fn install_font(app: &mut App) {
-    let font = Font::try_from_bytes(include_bytes!("../assets/wqy-microhei.ttc").to_vec())
-        .expect("Bundled Chinese font");
+    // Keep typography and rem-based spacing on the same logical-pixel scale.
+    app.insert_resource(bevy::text::RemSize(16.0));
+    let font = Font::from_bytes(include_bytes!("../assets/wqy-microhei.ttc").to_vec());
     app.world_mut()
         .resource_mut::<Assets<Font>>()
         .insert(AssetId::default(), font)
         .expect("Default font asset");
 }
 
-pub fn label(text: impl Into<String>, size: f32, color: Color) -> impl Bundle {
+pub fn label(
+    text: impl Into<String>,
+    size: f32,
+    color: Color,
+) -> (Text, TextFont, TextColor, TextLayout) {
     (
         Text::new(text),
-        TextFont::from_font_size(size),
+        TextFont::from_font_size(bevy::text::FontSize::Rem(size / 16.0)),
         TextColor(color),
-        TextLayout::new_with_linebreak(bevy::text::LineBreak::WordOrCharacter),
+        TextLayout::linebreak(bevy::text::LineBreak::WordOrCharacter),
     )
 }
 

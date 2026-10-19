@@ -3,8 +3,10 @@ support
 
 version
 
-1. rust 1.89 或更新版本（Bevy 0.18.1 的最低要求）
-2. bevy 0.18.1
+1. Rust 1.97.1（rust-toolchain.toml 与 CI 固定相同版本）
+2. Bevy 0.20.0
+
+升级细节与新版 UI/输入能力见 BEVY_UPGRADE.md。
 
 
 开发时运行::
@@ -57,7 +59,7 @@ GitHub 自动构建与发行
 推送 master/main、提交 Pull Request 或手动运行 Build and Package 工作流，
 会在 ubuntu-latest 上构建 Linux x86_64、Windows x86_64（cargo-xwin）和
 Android arm64-v8a Debug APK。推送 v* 标签时，三端全部成功后自动发布 GitHub Release。
-依赖通过仓库中的 Cargo.lock 与 --locked 锁定；Rust stable 和构建工具仍随上游更新。
+依赖通过仓库中的 Cargo.lock 与 --locked 锁定；Rust 固定为 1.97.1，构建工具仍随上游更新。
 
 Linux 压缩包解压后运行 ``bash install.sh``，默认安装到 ~/.local；
 使用 root 运行则安装到 /usr/local。用户级桌面入口和图标遵循 XDG_DATA_HOME

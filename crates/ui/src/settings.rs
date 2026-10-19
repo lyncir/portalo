@@ -1,18 +1,16 @@
+#[cfg(not(target_os = "android"))]
+use super::dialog::{Dialogs, DirectoryPicked};
 use super::{Action, Intent, theme::*, widgets::*};
 use bevy::{
     prelude::*,
     tasks::{IoTaskPool, Task, block_on, poll_once},
 };
-#[cfg(not(target_os = "android"))]
-use bevy_file_dialog::prelude::*;
 use portalo_core::{
     AppState,
     settings::{Preferences, SharedSettings, default_download_directory, persist},
 };
 
 pub struct SettingsPlugin;
-#[cfg(not(target_os = "android"))]
-pub struct DirectorySelection;
 #[derive(Resource)]
 pub struct LocalDevice {
     pub name: String,
@@ -60,7 +58,7 @@ impl Plugin for SettingsPlugin {
                 )),
             );
         #[cfg(not(target_os = "android"))]
-        app.insert_non_send_resource(ClipboardHolder(None))
+        app.insert_non_send(ClipboardHolder(None))
             .add_systems(Update, (directory_picked, copy_addresses));
         #[cfg(target_os = "android")]
         app.add_systems(
@@ -235,7 +233,7 @@ fn actions(
     settings: Res<SharedSettings>,
     mut jobs: ResMut<Jobs>,
     mut feedback: ResMut<Feedback>,
-    mut commands: Commands,
+    #[cfg(not(target_os = "android"))] mut dialogs: ResMut<Dialogs>,
 ) {
     for Intent(action) in messages.read() {
         if jobs.save.is_some() || jobs.picking_directory {
@@ -255,13 +253,10 @@ fn actions(
                 #[cfg(not(target_os = "android"))]
                 {
                     jobs.picking_directory = true;
-                    commands
-                        .dialog()
-                        .pick_directory_path::<DirectorySelection>();
+                    dialogs.directory();
                 }
                 #[cfg(target_os = "android")]
                 {
-                    let _ = &mut commands;
                     jobs.picking_directory = true;
                     feedback.0 = "请选择接收文件夹，并允许长期读写访问。".into();
                     if let Err(error) = portalo_core::android_storage::pick_directory() {
@@ -400,20 +395,19 @@ fn refresh_labels(
 
 #[cfg(not(target_os = "android"))]
 fn directory_picked(
-    mut input: MessageReader<DialogDirectoryPicked<DirectorySelection>>,
-    mut cancelled: MessageReader<DialogDirectoryPickCanceled<DirectorySelection>>,
+    mut input: MessageReader<DirectoryPicked>,
     settings: Res<SharedSettings>,
     mut jobs: ResMut<Jobs>,
     mut feedback: ResMut<Feedback>,
 ) {
-    for _ in cancelled.read() {
-        jobs.picking_directory = false;
-        feedback.0 = "已取消更改接收目录。".into();
-    }
     for event in input.read() {
         jobs.picking_directory = false;
+        let Some(path) = &event.0 else {
+            feedback.0 = "已取消更改接收目录。".into();
+            continue;
+        };
         let mut preferences = settings.0.read().unwrap().clone();
-        preferences.use_directory(event.path.clone());
+        preferences.use_directory(path.clone());
         save(&mut jobs, preferences, &mut feedback);
     }
 }

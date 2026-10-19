@@ -216,7 +216,7 @@ fn card(commands: &mut Commands, parent: Entity, id: u64) -> (Entity, ReceiveCar
             overflow: Overflow::clip(),
             ..default()
         },
-        TextLayout::new_with_linebreak(bevy::text::LineBreak::NoWrap),
+        TextLayout::no_wrap(),
     ));
     let close = action(commands, header, "关闭", Action::DismissReceive(id), false);
     commands.entity(close).insert((
@@ -244,7 +244,7 @@ fn card(commands: &mut Commands, parent: Entity, id: u64) -> (Entity, ReceiveCar
                 overflow: Overflow::clip(),
                 ..default()
             },
-            TextLayout::new_with_linebreak(bevy::text::LineBreak::NoWrap),
+            TextLayout::no_wrap(),
         ));
     }
     let track = commands
