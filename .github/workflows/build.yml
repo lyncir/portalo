@@ -25,7 +25,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             g++ pkg-config libx11-dev libasound2-dev libudev-dev \
-            libxkbcommon-x11-0 libwayland-dev
+            libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev
           pkg-config --modversion wayland-client
 
       - name: Setup Rust toolchain
@@ -37,6 +37,9 @@ jobs:
       - name: Run unit and library tests
         run: cargo test --locked --workspace --lib
 
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
       - name: Build binary
         run: cargo build --release --locked --bin portalo
 
@@ -47,7 +50,7 @@ jobs:
           cp assets/portalo.desktop dist/portalo-linux-x86_64/portalo.desktop
           cp assets/icon.png dist/portalo-linux-x86_64/portalo.png
           cp assets/install.sh dist/portalo-linux-x86_64/install.sh
-          cp README.rst dist/portalo-linux-x86_64/README.rst
+          cp README.md dist/portalo-linux-x86_64/README.md
           chmod +x dist/portalo-linux-x86_64/portalo dist/portalo-linux-x86_64/install.sh
           tar -czvf portalo-linux-x86_64.tar.gz -C dist portalo-linux-x86_64
 
@@ -84,6 +87,9 @@ jobs:
       - name: Install cargo-xwin
         uses: taiki-e/install-action@cargo-xwin
 
+      - name: Run Clippy (Windows target)
+        run: cargo xwin clippy --locked --workspace --target x86_64-pc-windows-msvc -- -D warnings
+
       - name: Build Windows binary
         run: cargo xwin build --release --locked --target x86_64-pc-windows-msvc --bin portalo
 
@@ -92,7 +98,7 @@ jobs:
           mkdir -p dist/portalo-windows-x86_64
           cp target/x86_64-pc-windows-msvc/release/portalo.exe dist/portalo-windows-x86_64/portalo.exe
           cp assets/icon.ico dist/portalo-windows-x86_64/portalo.ico
-          cp README.rst dist/portalo-windows-x86_64/README.rst
+          cp README.md dist/portalo-windows-x86_64/README.md
           cd dist
           zip -r ../portalo-windows-x86_64.zip portalo-windows-x86_64
           cd ..
@@ -140,7 +146,10 @@ jobs:
           key: android-arm64
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: Run Clippy (Android target)
+        run: cargo ndk -t arm64-v8a -P 26 clippy --locked --workspace -- -D warnings
 
       - name: Build Android Rust shared library
         run: |
