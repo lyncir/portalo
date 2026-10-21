@@ -7,6 +7,11 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.provider.OpenableColumns;
+import android.content.res.AssetFileDescriptor;
+import android.os.ParcelFileDescriptor;
+import android.system.Os;
+import android.system.OsConstants;
+import android.system.StructStat;
 import java.io.File;
 import java.io.InputStream;
 import java.io.FileOutputStream;
@@ -20,7 +25,8 @@ public class MainActivity extends GameActivity {
     private final ExecutorService fileWorker = Executors.newSingleThreadExecutor();
     private boolean picking;
     private final SafStorage receiveStorage = new SafStorage(this);
-    private native void nativeFilePicked(String path);
+    private native void nativeFilePicked(String path, String name);
+    private native void nativeFileDescriptorPicked(int fd, String name, long size);
     private native void nativeBackRequested();
     private native void nativeInsetsChanged(float top, float bottom);
     private native void nativeDirectoryPicked(String uri, String label, String error);
@@ -112,7 +118,7 @@ public class MainActivity extends GameActivity {
 
     public void pickFile() {
         runOnUiThread(() -> {
-            if (picking) { nativeFilePicked(""); return; }
+            if (picking) { nativeFilePicked("", ""); return; }
             picking = true;
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -141,7 +147,7 @@ public class MainActivity extends GameActivity {
             return;
         }
         if (request != 1001) return;
-        if (result != RESULT_OK || data == null || data.getData() == null) { picking = false; nativeFilePicked(""); return; }
+        if (result != RESULT_OK || data == null || data.getData() == null) { picking = false; nativeFilePicked("", ""); return; }
         Uri uri = data.getData();
         fileWorker.execute(() -> {
             File output = null;
@@ -155,9 +161,34 @@ public class MainActivity extends GameActivity {
                 }
                 name = name.replace('/', '_').replace('\\', '_');
                 if (name.isEmpty() || name.equals(".") || name.equals("..")) name = "selected-file";
+                // Probe on the file worker: SAF may expose regular files, slices,
+                // pipes or remote streams. Only a zero-offset, known-size regular
+                // file is handed directly to Rust; all others keep the cache path.
+                ParcelFileDescriptor direct = null;
+                long length = -1;
+                try (AssetFileDescriptor asset = getContentResolver().openAssetFileDescriptor(uri, "r")) {
+                    if (asset != null && asset.getStartOffset() == 0) {
+                        StructStat stat = Os.fstat(asset.getFileDescriptor());
+                        length = asset.getLength();
+                        if (OsConstants.S_ISREG(stat.st_mode) && length >= 0 && length <= stat.st_size) {
+                            Os.lseek(asset.getFileDescriptor(), 0, OsConstants.SEEK_SET);
+                            direct = ParcelFileDescriptor.dup(asset.getFileDescriptor());
+                        }
+                    }
+                } catch (Exception error) {
+                    if (direct != null) { try { direct.close(); } catch (Exception ignored) {} }
+                    direct = null;
+                    android.util.Log.d("Portalo", "Direct document unavailable; using cache", error);
+                }
+                if (direct != null) {
+                    int fd = direct.detachFd();
+                    nativeFileDescriptorPicked(fd, name, length);
+                    android.util.Log.i("Portalo", "Selected document FD directly: " + length + " bytes");
+                    return;
+                }
                 File directory = new File(getCacheDir(), "outgoing");
                 if (!directory.isDirectory() && !directory.mkdirs()) throw new java.io.IOException("Cannot create outgoing cache");
-                output = new File(directory, name);
+                output = File.createTempFile("portalo-", ".part", directory);
                 try (InputStream input = getContentResolver().openInputStream(uri);
                      FileOutputStream writer = new FileOutputStream(output)) {
                     if (input == null) throw new java.io.IOException("Cannot open selected file");
@@ -165,11 +196,11 @@ public class MainActivity extends GameActivity {
                     int count;
                     while ((count = input.read(buffer)) != -1) writer.write(buffer, 0, count);
                 }
-                nativeFilePicked(output.getAbsolutePath());
+                nativeFilePicked(output.getAbsolutePath(), name);
             } catch (Exception error) {
                 if (output != null) output.delete();
                 android.util.Log.e("Portalo", "File selection failed", error);
-                nativeFilePicked("");
+                nativeFilePicked("", "");
                 runOnUiThread(() -> android.widget.Toast.makeText(this, "无法读取所选文件，请检查访问权限和剩余空间", android.widget.Toast.LENGTH_LONG).show());
             } finally { runOnUiThread(() -> picking = false); }
         });

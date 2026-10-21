@@ -4791,6 +4791,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bevy",
+ "libc",
  "portalo_core",
  "tempfile",
  "tokio",

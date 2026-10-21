@@ -42,6 +42,8 @@ linux编译android命令::
 
 性能测试与新协议说明见 PERFORMANCE.md。新旧协议不兼容，请同时更新两端。
 
+Linux/Android 的 sendfile/splice 快速路径、SAF 文档直传及回退机制见 ZERO_COPY.md。
+
 Metro 风格 UI、快捷键、接收目录设置和构建产物说明见 UI.md。
 
 安卓“选择接收文件夹”的使用方法与 SAF 真机验证见 SAF_RECEIVE.md。

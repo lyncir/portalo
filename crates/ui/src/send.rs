@@ -3,7 +3,7 @@ use super::dialog::{self, Dialogs};
 use super::{Action, Intent, PickedFile, SelectedPeer, TransferDetails, theme::*, widgets::*};
 use bevy::prelude::*;
 use portalo_core::{AppState, FileTransferState, ProgressSender, TransferStatus};
-use portalo_network::{TokioRuntime, send_file_fast};
+use portalo_network::{SendSource, TokioRuntime, send_source_fast};
 
 pub struct SendPlugin;
 #[derive(Component)]
@@ -81,7 +81,7 @@ pub(super) fn setup(mut commands: Commands, selected: Res<SelectedPeer>) {
     text(
         &mut commands,
         body,
-        "选择后会先在后台准备文件。\n较大的文件需要一些时间和可用缓存空间。",
+        "本地文档优先直接发送。\n云端或未知大小的文件会先在后台缓存。",
         14.0,
         MUTED,
     );
@@ -159,7 +159,7 @@ fn picked(
         if transfer.is_active() {
             continue;
         }
-        let Some(path) = event.path.clone() else {
+        let Some(source) = event.source.clone() else {
             feedback.0 = "已取消选择文件，可以重新选择。".into();
             continue;
         };
@@ -174,11 +174,7 @@ fn picked(
             ..default()
         };
         *details = TransferDetails {
-            file_name: path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
+            file_name: source.name().unwrap_or("未命名文件").to_owned(),
             peer_name: peer.name.clone(),
             show_error: false,
         };
@@ -196,15 +192,11 @@ fn picked(
         let peer_id = peer_id.clone();
         let tx = progress.0.clone();
         runtime.0.spawn(async move {
-            match send_file_fast(addresses, &path, tx, id).await {
+            match send_source_fast(addresses, source, tx, id).await {
                 Ok(address) => {
                     preferred.lock().unwrap().insert(peer_id, address);
                 }
                 Err(e) => error!("Send: {e:#}"),
-            }
-            #[cfg(target_os = "android")]
-            {
-                let _ = tokio::fs::remove_file(&path).await;
             }
         });
     }
@@ -249,7 +241,7 @@ fn dropped_files(
         feedback.0 = "一次只支持一个文件，请逐个发送。".into();
     } else {
         files.write(PickedFile {
-            path: dropped.into_iter().next(),
+            source: dropped.into_iter().next().map(SendSource::Path),
         });
     }
 }

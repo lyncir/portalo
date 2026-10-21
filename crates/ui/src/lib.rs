@@ -36,7 +36,7 @@ enum Action {
 struct Intent(Action);
 #[derive(Message)]
 pub struct PickedFile {
-    pub path: Option<std::path::PathBuf>,
+    pub source: Option<portalo_network::SendSource>,
 }
 #[derive(Resource, Default)]
 struct SelectedPeer {

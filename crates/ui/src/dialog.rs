@@ -47,7 +47,9 @@ pub(super) fn poll(
         && let Some(path) = block_on(poll_once(task))
     {
         dialogs.file = None;
-        files.write(super::PickedFile { path });
+        files.write(super::PickedFile {
+            source: path.map(portalo_network::SendSource::Path),
+        });
     }
     if let Some(task) = dialogs.directory.as_mut()
         && let Some(path) = block_on(poll_once(task))

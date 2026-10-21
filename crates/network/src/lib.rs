@@ -33,6 +33,10 @@ struct ReceiveNoticeSender(watch::Sender<String>);
 #[cfg(target_os = "android")]
 mod android_saf;
 mod receive_progress;
+mod source;
+pub use source::SendSource;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod kernel_copy;
 use receive_progress::ReceiveProgress;
 
 impl Plugin for NetworkPlugin {
@@ -183,6 +187,43 @@ async fn copy_exact(
     progress: &mut ReceiveProgress,
 ) -> anyhow::Result<()> {
     progress.receiving();
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        // Cloud SAF providers may return a pipe rather than a regular file.
+        // Preserve Tokio's timed streaming path for such descriptors.
+        if file.metadata().await?.is_file() {
+            let mut previous = 0;
+            kernel_copy::copy(
+                stream,
+                file,
+                size,
+                kernel_copy::Direction::Receive,
+                |current| {
+                    progress.advance(current - previous);
+                    previous = current;
+                },
+            )
+            .await?;
+        } else {
+            copy_buffered_exact(stream, file, size, progress).await?;
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    copy_buffered_exact(stream, file, size, progress).await?;
+    progress.saving();
+    timeout(IDLE, file.flush()).await??;
+    Ok(())
+}
+
+async fn copy_buffered_exact(
+    stream: &mut TcpStream,
+    file: &mut File,
+    size: u64,
+    progress: &mut ReceiveProgress,
+) -> anyhow::Result<()> {
+    if size == 0 {
+        return Ok(());
+    }
     let mut buffer = vec![0; buffer_size()];
     let mut remaining = size;
     while remaining > 0 {
@@ -193,8 +234,6 @@ async fn copy_exact(
         remaining -= count as u64;
         progress.advance(count as u64);
     }
-    progress.saving();
-    timeout(IDLE, file.flush()).await??;
     Ok(())
 }
 
@@ -220,61 +259,56 @@ async fn receive_local(
             Err(e) => return Err(e.into()),
         }
     };
-    let result: anyhow::Result<()> = async {
-        copy_exact(stream, &mut file, size, progress).await?;
-        drop(file);
-        // Use each platform's no-replace rename, with tempfile's fallback for
-        // older kernels. Publication neither copies the payload nor overwrites.
-        let publish_path = temporary.clone();
-        let publish_name = name.to_owned();
-        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            let mut temporary = tempfile::TempPath::try_from_path(publish_path)?;
-            let mut suffix = 0u64;
-            loop {
-                let target = directory.join(if suffix == 0 {
-                    publish_name.clone()
-                } else {
-                    format!("{publish_name}.{suffix}")
-                });
-                match temporary.persist_noclobber(&target) {
-                    Ok(()) => return Ok(()),
-                    Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+    // Own the temporary path before the first payload await, so dropping a
+    // cancelled receive also unlinks its partial output.
+    let temporary = tempfile::TempPath::try_from_path(temporary)?;
+    copy_exact(stream, &mut file, size, progress).await?;
+    drop(file);
+    // Use each platform's no-replace rename, with tempfile's fallback for
+    // older kernels. Publication neither copies the payload nor overwrites.
+    let publish_name = name.to_owned();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let mut temporary = temporary;
+        let mut suffix = 0u64;
+        loop {
+            let target = directory.join(if suffix == 0 {
+                publish_name.clone()
+            } else {
+                format!("{publish_name}.{suffix}")
+            });
+            match temporary.persist_noclobber(&target) {
+                Ok(()) => return Ok(()),
+                Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    temporary = e.path;
+                    suffix += 1;
+                }
+                Err(e) => {
+                    // Android emulated storage may reject both NOREPLACE
+                    // rename and hard links. Reserve a fresh filename first,
+                    // then replace only our own empty reservation. No second
+                    // payload copy is needed and existing names are skipped.
+                    #[cfg(target_os = "android")]
+                    if matches!(
+                        e.error.kind(),
+                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
+                    ) {
                         temporary = e.path;
-                        suffix += 1;
-                    }
-                    Err(e) => {
-                        // Android emulated storage may reject both NOREPLACE
-                        // rename and hard links. Reserve a fresh filename first,
-                        // then replace only our own empty reservation. No second
-                        // payload copy is needed and existing names are skipped.
-                        #[cfg(target_os = "android")]
-                        if matches!(
-                            e.error.kind(),
-                            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported
-                        ) {
-                            temporary = e.path;
-                            match reserve_and_rename(&temporary, &target) {
-                                Ok(()) => return Ok(()),
-                                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                                    suffix += 1;
-                                    continue;
-                                }
-                                Err(error) => return Err(error),
+                        match reserve_and_rename(&temporary, &target) {
+                            Ok(()) => return Ok(()),
+                            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                                suffix += 1;
+                                continue;
                             }
+                            Err(error) => return Err(error),
                         }
-                        return Err(e.error);
                     }
+                    return Err(e.error);
                 }
             }
-        })
-        .await??;
-        Ok(())
-    }
-    .await;
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&temporary).await;
-    }
-    result
+        }
+    })
+    .await??;
+    Ok(())
 }
 
 #[cfg(any(target_os = "android", test))]
@@ -297,13 +331,28 @@ pub async fn send_file_fast(
     progress: watch::Sender<TransferProgressMsg>,
     id: u64,
 ) -> anyhow::Result<SocketAddr> {
+    send_source_fast(
+        addresses,
+        SendSource::Path(file_path.as_ref().to_owned()),
+        progress,
+        id,
+    )
+    .await
+}
+
+pub async fn send_source_fast(
+    addresses: Vec<SocketAddr>,
+    source: SendSource,
+    progress: watch::Sender<TransferProgressMsg>,
+    id: u64,
+) -> anyhow::Result<SocketAddr> {
     let mut snapshot = TransferProgressMsg {
         id,
         status: TransferStatus::Connecting,
         ..Default::default()
     };
     progress.send_replace(snapshot.clone());
-    let result = send_inner(addresses, file_path.as_ref(), &progress, &mut snapshot).await;
+    let result = send_inner(addresses, &source, &progress, &mut snapshot).await;
     snapshot.status = match &result {
         Ok(_) => TransferStatus::Complete,
         Err(e) => TransferStatus::Failed(format!("{e:#}")),
@@ -314,19 +363,46 @@ pub async fn send_file_fast(
 
 async fn send_inner(
     addresses: Vec<SocketAddr>,
-    path: &Path,
+    source: &SendSource,
     progress: &watch::Sender<TransferProgressMsg>,
     snapshot: &mut TransferProgressMsg,
 ) -> anyhow::Result<SocketAddr> {
-    let mut file = File::open(path).await?;
+    let mut file = match source {
+        SendSource::OpenFile { file, .. } => File::from_std(
+            file.lock()
+                .map_err(|_| anyhow::anyhow!("Source lock poisoned"))?
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("Selected document already consumed"))?,
+        ),
+        _ => File::open(source.path().expect("Path source")).await?,
+    };
+    if matches!(source, SendSource::OpenFile { .. }) {
+        use tokio::io::AsyncSeekExt;
+        file.rewind().await?;
+    }
     let metadata = file.metadata().await?;
     anyhow::ensure!(metadata.is_file(), "Select a regular file");
-    snapshot.total = metadata.len();
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
+    snapshot.total = match source {
+        SendSource::OpenFile { size, .. } => {
+            anyhow::ensure!(
+                *size <= metadata.len(),
+                "Source file shortened before transfer"
+            );
+            *size
+        }
+        _ => metadata.len(),
+    };
+    let name = source
+        .name()
         .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?;
-    anyhow::ensure!(name.len() <= 4096, "Filename too long");
+    anyhow::ensure!(
+        !name.is_empty()
+            && name.len() <= 4096
+            && name != "."
+            && name != ".."
+            && !name.contains(['/', '\\', '\0']),
+        "Invalid filename"
+    );
     let connected = Instant::now();
     let mut connection = None;
     for address in addresses {
@@ -350,19 +426,37 @@ async fn send_inner(
     timeout(IDLE, stream.write_all(&header)).await??;
     info!("Connected to {address} in {:?}", connected.elapsed());
     let started = Instant::now();
-    let mut reported = Instant::now();
     snapshot.status = TransferStatus::Sending;
     progress.send_replace(snapshot.clone());
-    let mut buffer = vec![0; buffer_size()];
-    while snapshot.current < snapshot.total {
-        let limit = (snapshot.total - snapshot.current).min(buffer.len() as u64) as usize;
-        let count = timeout(IDLE, file.read(&mut buffer[..limit])).await??;
-        anyhow::ensure!(count > 0, "Source file shortened during transfer");
-        timeout(IDLE, stream.write_all(&buffer[..count])).await??;
-        snapshot.current += count as u64;
-        if reported.elapsed() >= Duration::from_millis(100) {
-            progress.send_replace(snapshot.clone());
-            reported = Instant::now();
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    kernel_copy::copy(
+        &stream,
+        &file,
+        snapshot.total,
+        kernel_copy::Direction::Send,
+        |current| {
+            if snapshot.current != current {
+                snapshot.current = current;
+                progress.send_replace(snapshot.clone());
+            }
+        },
+    )
+    .await?;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        let mut file = file;
+        let mut reported = Instant::now();
+        let mut buffer = vec![0; buffer_size()];
+        while snapshot.current < snapshot.total {
+            let limit = (snapshot.total - snapshot.current).min(buffer.len() as u64) as usize;
+            let count = timeout(IDLE, file.read(&mut buffer[..limit])).await??;
+            anyhow::ensure!(count > 0, "Source file shortened during transfer");
+            timeout(IDLE, stream.write_all(&buffer[..count])).await??;
+            snapshot.current += count as u64;
+            if reported.elapsed() >= Duration::from_millis(100) {
+                progress.send_replace(snapshot.clone());
+                reported = Instant::now();
+            }
         }
     }
     snapshot.status = TransferStatus::AwaitingConfirmation;
@@ -383,6 +477,122 @@ async fn send_inner(
 mod tests {
     use super::*;
     use portalo_core::receive::ReceivePhase;
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn non_regular_provider_descriptor_uses_timed_streaming_fallback() {
+        use std::{
+            io::Read,
+            os::{fd::OwnedFd, unix::net::UnixStream},
+        };
+        let (mut provider, output) = UnixStream::pair().unwrap();
+        let mut file = File::from_std(std::fs::File::from(OwnedFd::from(output)));
+        assert!(!file.metadata().await.unwrap().is_file());
+        let reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            provider.read_to_end(&mut bytes).unwrap();
+            bytes
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let receiver = tokio::spawn(async move {
+            let (mut stream, peer) = listener.accept().await.unwrap();
+            let mut progress = ReceiveProgress::new(peer, None).unwrap();
+            copy_exact(&mut stream, &mut file, 256 * 1024, &mut progress)
+                .await
+                .unwrap();
+        });
+        let data = vec![37; 256 * 1024];
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream.write_all(&data).await.unwrap();
+        receiver.await.unwrap();
+        assert_eq!(reader.join().unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn owned_document_uses_logical_name_length_and_can_only_be_consumed_once() {
+        use std::io::{Seek, Write};
+        let target = tempfile::tempdir().unwrap();
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"payload-extra").unwrap();
+        file.seek(std::io::SeekFrom::Start(3)).unwrap();
+        let source = SendSource::from_file(file, "文档.bin".into(), 7);
+        let consumed = source.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let directory = target.path().to_owned();
+        let receiver = tokio::spawn(async move {
+            start_file_receiver(listener.accept().await.unwrap().0, directory).await
+        });
+        let (progress, _) = watch::channel(TransferProgressMsg::default());
+        send_source_fast(vec![address], source, progress.clone(), 1)
+            .await
+            .unwrap();
+        receiver.await.unwrap().unwrap();
+        assert_eq!(
+            std::fs::read(target.path().join("文档.bin")).unwrap(),
+            b"payload"
+        );
+        assert!(
+            send_source_fast(vec![address], consumed, progress, 2)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("already consumed")
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_receive_removes_partial_file_and_releases_socket() {
+        let directory = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let ledger = ReceiveTransfers::default();
+        let tracked = ledger.clone();
+        let target = directory.path().to_owned();
+        let receiver = tokio::spawn(async move {
+            start_file_receiver_tracked(
+                listener.accept().await.unwrap().0,
+                ReceiveDestination::Directory(target),
+                tracked,
+            )
+            .await
+        });
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream.write_all(MAGIC).await.unwrap();
+        stream.write_u32_le(8).await.unwrap();
+        stream.write_all(b"test.bin").await.unwrap();
+        stream.write_u64_le(1024 * 1024).await.unwrap();
+        stream.write_all(&[7; 1024]).await.unwrap();
+        timeout(Duration::from_secs(3), async {
+            loop {
+                if ledger
+                    .snapshot_since(None)
+                    .unwrap()
+                    .1
+                    .first()
+                    .is_some_and(|task| task.received == 1024)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        receiver.abort();
+        let _ = receiver.await;
+        let mut byte = [0];
+        let closed = timeout(Duration::from_secs(2), stream.read(&mut byte))
+            .await
+            .unwrap();
+        assert!(matches!(closed, Ok(0)) || closed.is_err());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        assert!(matches!(
+            ledger.snapshot_since(None).unwrap().1[0].phase,
+            ReceivePhase::Failed(_)
+        ));
+    }
 
     #[tokio::test]
     async fn tracked_receive_keeps_partial_progress_then_reports_truncation() {

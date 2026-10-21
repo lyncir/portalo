@@ -1,5 +1,5 @@
-//! Android SAF bridge. The Java side streams content URIs into private cache
-//! on a worker, never loading a complete file into memory.
+//! Android SAF bridge. Regular documents transfer an owned FD to Rust;
+//! unknown-length/provider streams fall back to a private cache on a worker.
 use bevy::prelude::*;
 use jni::{
     JNIEnv, JavaVM,
@@ -50,7 +50,7 @@ pub(super) fn update_insets(
     }
 }
 
-static PICKED: Mutex<Option<Option<PathBuf>>> = Mutex::new(None);
+static PICKED: Mutex<Option<Option<portalo_network::SendSource>>> = Mutex::new(None);
 pub(super) type DirectoryResult = Result<Option<portalo_core::settings::DocumentTree>, String>;
 static DIRECTORY: Mutex<Option<DirectoryResult>> = Mutex::new(None);
 
@@ -109,6 +109,7 @@ pub extern "system" fn Java_org_bevyengine_portalo_MainActivity_nativeFilePicked
     mut env: JNIEnv,
     _activity: JObject,
     path: JString,
+    name: JString,
 ) {
     if let Ok(path) = env.get_string(&path) {
         let path = String::from(path);
@@ -116,9 +117,41 @@ pub extern "system" fn Java_org_bevyengine_portalo_MainActivity_nativeFilePicked
             *picked = Some(if path.is_empty() {
                 None
             } else {
-                Some(PathBuf::from(path))
+                let name = env
+                    .get_string(&name)
+                    .map(String::from)
+                    .unwrap_or_else(|_| "selected-file".into());
+                portalo_network::SendSource::cached(PathBuf::from(path), name).ok()
             });
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_bevyengine_portalo_MainActivity_nativeFileDescriptorPicked(
+    mut env: JNIEnv,
+    _activity: JObject,
+    fd: jni::sys::jint,
+    name: JString,
+    size: jni::sys::jlong,
+) {
+    use std::os::fd::FromRawFd;
+    // Java detached this FD and will never close or access it again. Take
+    // ownership before parsing strings so every error path closes it too.
+    let source = if fd >= 0 {
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        if size >= 0 {
+            env.get_string(&name)
+                .ok()
+                .map(|name| portalo_network::SendSource::from_file(file, name.into(), size as u64))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Ok(mut picked) = PICKED.lock() {
+        *picked = Some(source);
     }
 }
 
@@ -134,8 +167,8 @@ pub(super) fn poll_file(
             intents.write(super::Intent(super::Action::Back));
         }
     }
-    if let Some(path) = PICKED.lock().ok().and_then(|mut value| value.take()) {
-        messages.write(super::PickedFile { path });
+    if let Some(source) = PICKED.lock().ok().and_then(|mut value| value.take()) {
+        messages.write(super::PickedFile { source });
     }
 }
 
