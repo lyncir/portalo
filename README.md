@@ -128,7 +128,7 @@ cargo xwin clippy --locked --target x86_64-pc-windows-msvc --workspace -- -D war
 
 ## 安装包与发布
 
-- CI 仅在推送 `v*` 版本标签时构建 Linux、Windows 和 Android 包；普通分支推送和 PR 不触发构建。
+- CI 在推送 `master` / `main`、向这些分支提交 PR、手动触发或推送 `v*` 标签时构建 Linux、Windows 和 Android 包。
 - 推送 `v*` 标签后，三端构建全部成功才发布 GitHub Release。
 - Linux 安装包解压后运行 `bash install.sh`：普通用户安装到 `~/.local`，root 安装到 `/usr/local`。
 - Linux 产物动态链接 glibc，并非 AppImage；可用 `ldd portalo` 检查缺少的运行库。

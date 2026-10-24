@@ -367,7 +367,7 @@ fn single_file_rename_publication_recovers_and_rejects_changed_content() {
             let s = open().unwrap();
             if streaming {
                 let payload = s.open_payload(0).unwrap();
-                s.write_stream_block(&payload, 0, data, &blake3::hash(data).to_hex().to_string())
+                s.write_stream_block(&payload, 0, data, blake3::hash(data).to_hex().as_ref())
                     .unwrap();
             } else {
                 s.block(0, 0, data).unwrap();
