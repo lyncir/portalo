@@ -113,6 +113,8 @@ bash gradlew installDebug
 
 产物：`android_app/build/outputs/apk/debug/Portalo-debug.apk`。这是包含 Release 优化 Rust 库的 Debug APK，最低支持 Android API 26。
 
+APK 压缩打包原生库，安装时由系统解压，主要减少下载体积，安装后的原生库占用不变。若本地反复增量打包后 APK 异常变大，可运行 `bash gradlew clean assembleDebug` 清除打包遗留空间。
+
 仓库中的 `android_app/debug.keystore` 为固定测试签名（密码 `android`）。使用同一签名的 APK 可覆盖安装；不同签名无法直接覆盖，迁移前应备份数据。
 
 ## 检查与验证

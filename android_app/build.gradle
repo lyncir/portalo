@@ -59,6 +59,12 @@ android {
 	// The final part to insert libc++_shared.so only
 	packagingOptions {
 		exclude 'lib/*/libdummy.so'
+
+        // Compress native libraries in APKs. Android extracts them at install
+        // time; this reduces download size without changing the Rust binary.
+        jniLibs {
+            useLegacyPackaging = true
+        }
 	}
     sourceSets {
         main {
