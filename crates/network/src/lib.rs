@@ -32,8 +32,13 @@ pub struct TokioRuntime(pub Runtime);
 struct ReceiveNoticeSender(watch::Sender<String>);
 #[cfg(target_os = "android")]
 mod android_saf;
+mod connect;
+mod filename;
 mod receive_progress;
 mod source;
+pub mod transfer;
+#[cfg(windows)]
+mod windows_io;
 pub use source::SendSource;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 mod kernel_copy;
@@ -79,8 +84,9 @@ fn setup_network_listener(
             let listener = TcpListener::bind("0.0.0.0:49527").await?;
             let slots = Arc::new(Semaphore::new(MAX_ACTIVE_RECEIVES));
             loop {
-                let (stream, addr) = listener.accept().await?;
+                let (mut stream, addr) = listener.accept().await?;
                 let Ok(permit) = slots.clone().try_acquire_owned() else {
+                    transfer::busy(&mut stream).await;
                     continue;
                 };
                 let destination = settings
@@ -132,6 +138,12 @@ async fn receive_impl(
     transfers: Option<ReceiveTransfers>,
 ) -> anyhow::Result<()> {
     let mut progress = ReceiveProgress::new(stream.peer_addr()?, transfers)?;
+    let mut magic = [0; 8];
+    timeout(IDLE, stream.read_exact(&mut magic)).await??;
+    if &magic == transfer::MAGIC {
+        return transfer::receive(stream, destination, progress).await;
+    }
+    anyhow::ensure!(&magic == MAGIC, "Unsupported protocol; update both devices");
     let result = receive_payload(&mut stream, destination, &mut progress).await;
     progress.finish(result.as_ref().err().map(|error| format!("{error:#}")));
     result
@@ -143,18 +155,12 @@ async fn receive_payload(
     progress: &mut ReceiveProgress,
 ) -> anyhow::Result<()> {
     let (name, size) = timeout(IDLE, async {
-        let mut magic = [0; 8];
-        stream.read_exact(&mut magic).await?;
-        anyhow::ensure!(&magic == MAGIC, "Unsupported protocol; update both devices");
         let length = stream.read_u32_le().await? as usize;
         anyhow::ensure!((1..=4096).contains(&length), "Invalid filename length");
         let mut name = vec![0; length];
         stream.read_exact(&mut name).await?;
         let name = String::from_utf8(name)?;
-        anyhow::ensure!(
-            name != "." && name != ".." && !name.contains(['/', '\\', '\0']),
-            "Invalid filename"
-        );
+        filename::validate(&name, cfg!(target_os = "windows"))?;
         let size = stream.read_u64_le().await?;
         Ok::<_, anyhow::Error>((name, size))
     })
@@ -376,18 +382,18 @@ async fn send_inner(
         ),
         _ => File::open(source.path().expect("Path source")).await?,
     };
-    if matches!(source, SendSource::OpenFile { .. }) {
-        use tokio::io::AsyncSeekExt;
-        file.rewind().await?;
-    }
     let metadata = file.metadata().await?;
     anyhow::ensure!(metadata.is_file(), "Select a regular file");
     snapshot.total = match source {
-        SendSource::OpenFile { size, .. } => {
+        SendSource::OpenFile { size, offset, .. } => {
             anyhow::ensure!(
-                *size <= metadata.len(),
+                offset
+                    .checked_add(*size)
+                    .is_some_and(|end| end <= metadata.len()),
                 "Source file shortened before transfer"
             );
+            use tokio::io::AsyncSeekExt;
+            file.seek(std::io::SeekFrom::Start(*offset)).await?;
             *size
         }
         _ => metadata.len(),
@@ -395,28 +401,9 @@ async fn send_inner(
     let name = source
         .name()
         .ok_or_else(|| anyhow::anyhow!("Invalid filename"))?;
-    anyhow::ensure!(
-        !name.is_empty()
-            && name.len() <= 4096
-            && name != "."
-            && name != ".."
-            && !name.contains(['/', '\\', '\0']),
-        "Invalid filename"
-    );
+    filename::validate(name, false)?;
     let connected = Instant::now();
-    let mut connection = None;
-    for address in addresses {
-        if let Ok(Ok(stream)) = timeout(Duration::from_secs(2), TcpStream::connect(address)).await {
-            connection = Some((stream, address));
-            break;
-        }
-        anyhow::ensure!(
-            connected.elapsed() < Duration::from_secs(10),
-            "Connection deadline exceeded"
-        );
-    }
-    let (mut stream, address) =
-        connection.ok_or_else(|| anyhow::anyhow!("No reachable device address"))?;
+    let (mut stream, address) = connect::connect(addresses).await?;
     stream.set_nodelay(true)?;
     let mut header = Vec::with_capacity(20 + name.len());
     header.extend_from_slice(MAGIC);
@@ -514,9 +501,9 @@ mod tests {
         use std::io::{Seek, Write};
         let target = tempfile::tempdir().unwrap();
         let mut file = tempfile::tempfile().unwrap();
-        file.write_all(b"payload-extra").unwrap();
+        file.write_all(b"prefix-payload-extra").unwrap();
         file.seek(std::io::SeekFrom::Start(3)).unwrap();
-        let source = SendSource::from_file(file, "文档.bin".into(), 7);
+        let source = SendSource::from_file_region(file, "文档.bin".into(), 7, 7);
         let consumed = source.clone();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -540,6 +527,20 @@ mod tests {
                 .to_string()
                 .contains("already consumed")
         );
+    }
+
+    #[tokio::test]
+    async fn document_region_bounds_are_checked_before_connecting() {
+        for (offset, size) in [(5, 1), (u64::MAX, 2)] {
+            let file = tempfile::tempfile().unwrap();
+            file.set_len(5).unwrap();
+            let source = SendSource::from_file_region(file, "region.bin".into(), offset, size);
+            let (progress, _) = watch::channel(TransferProgressMsg::default());
+            let error = send_source_fast(vec![], source, progress, 1)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("Source file shortened"));
+        }
     }
 
     #[tokio::test]

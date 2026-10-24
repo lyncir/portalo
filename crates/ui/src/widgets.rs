@@ -116,6 +116,7 @@ pub fn page(
             Node {
                 width: percent(100),
                 height: percent(100),
+                min_width: px(0),
                 min_height: px(0),
                 justify_content: JustifyContent::Center,
                 ..default()
@@ -129,6 +130,9 @@ pub fn page(
             Node {
                 width: percent(100),
                 max_width: px(780),
+                // Prevent a long unwrapped receive title from contributing an
+                // automatic minimum width to the entire page's flex column.
+                min_width: px(0),
                 height: percent(100),
                 min_height: px(0),
                 padding: UiRect::all(rem(1.25)),
@@ -143,6 +147,7 @@ pub fn page(
         .spawn((
             Node {
                 flex_direction: FlexDirection::Column,
+                min_width: px(0),
                 flex_shrink: 0.0,
                 row_gap: rem(0.25),
                 ..default()
@@ -157,6 +162,7 @@ pub fn page(
     let viewport = commands
         .spawn(Node {
             width: percent(100),
+            min_width: px(0),
             // Allocate only the space left after header/receive cards. An auto
             // basis can use the scroll child's intrinsic text height in 0.20.
             flex_basis: px(0),
@@ -173,6 +179,7 @@ pub fn page(
             Node {
                 width: percent(100),
                 height: percent(100),
+                min_width: px(0),
                 padding: UiRect::right(px(8)),
                 min_height: px(0),
                 flex_grow: 1.0,

@@ -26,6 +26,7 @@ enum Field {
     Bytes,
     Speed,
     Error,
+    Detail,
 }
 
 pub(super) fn setup(mut commands: Commands, details: Res<TransferDetails>) {
@@ -78,6 +79,7 @@ pub(super) fn setup(mut commands: Commands, details: Res<TransferDetails>) {
         (Field::Bytes, 16.0),
         (Field::Speed, 15.0),
         (Field::Error, 14.0),
+        (Field::Detail, 13.0),
     ] {
         let entity = text(&mut commands, body, "", size, MUTED);
         commands.entity(entity).insert(field);
@@ -90,6 +92,20 @@ pub(super) fn setup(mut commands: Commands, details: Res<TransferDetails>) {
         false,
     );
     action(&mut commands, body, "‹ 返回发送页面", Action::Back, true);
+    action(
+        &mut commands,
+        body,
+        "暂停（保留进度）",
+        Action::PauseTransfer,
+        false,
+    );
+    action(
+        &mut commands,
+        body,
+        "取消任务并清理",
+        Action::CancelTransfer,
+        false,
+    );
 }
 
 fn toggle_details(mut messages: MessageReader<Intent>, mut details: ResMut<TransferDetails>) {
@@ -107,10 +123,10 @@ fn status_text(status: &TransferStatus) -> &'static str {
         TransferStatus::Sending => "正在发送，请保持设备连接",
         TransferStatus::AwaitingConfirmation => "文件已发送，等待对方确认…",
         TransferStatus::Complete => "传输完成，对方已确认接收",
-        TransferStatus::Failed(error) if error.contains("Select a regular file") => {
-            "暂不支持文件夹，请选择单个文件"
-        }
-        TransferStatus::Failed(_) => "发送失败，请检查设备连接和文件访问权限",
+        TransferStatus::Paused => "任务已暂停，可从未完成任务继续",
+        TransferStatus::Preparing => "正在扫描并准备文件来源…",
+        TransferStatus::Cancelled => "任务已取消并清理",
+        TransferStatus::Failed(_) => "发送失败，原因见下方",
     }
 }
 
@@ -135,6 +151,12 @@ fn render(
     };
     for (field, mut text, mut text_color) in &mut labels {
         let value = match field {
+            Field::Detail => match &state.status {
+                TransferStatus::Failed(error) => {
+                    format!("失败原因：{}", error.lines().next().unwrap_or(error))
+                }
+                _ => state.detail.clone(),
+            },
             Field::Status => {
                 if text_color.0 != color {
                     text_color.0 = color;
@@ -188,6 +210,15 @@ fn render(
         }
     }
     for (entity, button) in &buttons {
+        if matches!(button.0, Action::PauseTransfer | Action::CancelTransfer) {
+            let active = state.is_active();
+            commands
+                .entity(entity)
+                .entry::<Node>()
+                .and_modify(move |mut node| {
+                    node.display = if active { Display::Flex } else { Display::None };
+                });
+        }
         if matches!(button.0, Action::Back) {
             if state.is_active() {
                 commands
@@ -222,6 +253,7 @@ fn update_transfer_state_system(
             state.bytes_transferred = msg.current;
             state.total_bytes = msg.total;
             state.status = msg.status;
+            state.detail = msg.detail;
             if !state.is_active() {
                 state.current_speed = 0.0;
             }
@@ -280,6 +312,7 @@ mod tests {
             current: 1_048_576,
             total: 10_485_760,
             status: TransferStatus::Sending,
+            detail: String::new(),
         });
         app.world_mut()
             .resource_mut::<Time<Real>>()

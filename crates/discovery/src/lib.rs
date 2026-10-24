@@ -14,9 +14,11 @@ impl Plugin for ServiceDiscoveryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PeerList>()
             .init_resource::<Instances>()
+            .init_resource::<MdnsStartup>()
             .add_systems(
                 Update,
                 (
+                    initialize_mdns_daemon.run_if(on_timer(Duration::from_secs(5))),
                     refresh_interfaces,
                     listen_for_service,
                     keep_alive_broadcast.run_if(on_timer(Duration::from_secs(30))),
@@ -49,6 +51,7 @@ pub struct PeerInfo {
     pub ips: Vec<String>,
     pub os: String,
     pub port: u16,
+    pub protocol: String,
 }
 
 struct Instance {
@@ -58,24 +61,55 @@ struct Instance {
 #[derive(Resource, Default)]
 struct Instances(HashMap<String, Instance>);
 
-pub fn initialize_mdns_daemon(mut commands: Commands) {
+// Retain the daemon when browse fails: retry its signal socket rather than
+// spawning another background daemon every time networking is restricted.
+#[derive(Resource, Default)]
+pub struct MdnsStartup(Option<ServiceDaemon>);
+
+pub fn initialize_mdns_daemon(
+    mut commands: Commands,
+    mut startup: ResMut<MdnsStartup>,
+    manager: Option<Res<MdnsManager>>,
+) {
+    if manager.is_some() {
+        return;
+    }
+    if startup.0.is_none() {
+        match ServiceDaemon::new() {
+            Ok(daemon) => startup.0 = Some(daemon),
+            Err(error) => {
+                warn!("mDNS unavailable; will retry: {error}");
+                return;
+            }
+        }
+    }
+    let receiver = match startup.0.as_ref().unwrap().browse(SERVICE) {
+        Ok(receiver) => receiver,
+        Err(error) => {
+            warn!("mDNS browse unavailable; will retry: {error}");
+            return;
+        }
+    };
     let hostname: String = portalo_core::device::device_name()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    let daemon = ServiceDaemon::new().expect("mDNS daemon");
-    let receiver = daemon.browse(SERVICE).expect("mDNS browse");
-    commands.insert_resource(MdnsManager {
-        daemon,
+    let mut manager = MdnsManager {
+        daemon: startup.0.take().unwrap(),
         receiver,
         hostname,
         registered: HashMap::new(),
         interfaces: Vec::new(),
         interface_scan: None,
-    });
+    };
+    start_interface_scan(&mut manager);
+    commands.insert_resource(manager);
 }
 
-pub fn auto_publish_service(mut mdns: ResMut<MdnsManager>) {
+pub fn auto_publish_service(mdns: Option<ResMut<MdnsManager>>) {
+    let Some(mut mdns) = mdns else {
+        return;
+    };
     start_interface_scan(&mut mdns);
 }
 
@@ -85,7 +119,10 @@ fn start_interface_scan(mdns: &mut MdnsManager) {
     }
 }
 
-fn refresh_interfaces(mut mdns: ResMut<MdnsManager>) {
+fn refresh_interfaces(mdns: Option<ResMut<MdnsManager>>) {
+    let Some(mut mdns) = mdns else {
+        return;
+    };
     let Some(task) = mdns.interface_scan.as_mut() else {
         return;
     };
@@ -114,7 +151,7 @@ fn publish(mdns: &mut MdnsManager) {
     for (interface, ip) in &mdns.interfaces {
         let properties = [
             ("os", std::env::consts::OS),
-            ("ver", "1"),
+            ("ver", "2"),
             ("hb", heartbeat.as_str()),
         ];
         let service = ServiceInfo::new(
@@ -165,10 +202,13 @@ fn rebuild(instances: &Instances, peers: &mut PeerList) {
 }
 
 fn listen_for_service(
-    mdns: Res<MdnsManager>,
+    mdns: Option<Res<MdnsManager>>,
     mut instances: ResMut<Instances>,
     mut peers: ResMut<PeerList>,
 ) {
+    let Some(mdns) = mdns else {
+        return;
+    };
     let mut changed = false;
     // Bound work per frame even when several interfaces announce simultaneously.
     for _ in 0..64 {
@@ -192,6 +232,12 @@ fn listen_for_service(
                     continue;
                 }
                 let peer = PeerInfo {
+                    protocol: info
+                        .get_properties()
+                        .iter()
+                        .find(|p| p.key() == "ver")
+                        .map(|p| p.val_str().to_owned())
+                        .unwrap_or_default(),
                     name: info.get_hostname().to_owned(),
                     ips,
                     port: info.get_port(),
@@ -244,13 +290,26 @@ fn cleanup_expired_peers(mut instances: ResMut<Instances>, mut peers: ResMut<Pee
     }
 }
 
-fn keep_alive_broadcast(mut mdns: ResMut<MdnsManager>) {
+fn keep_alive_broadcast(mdns: Option<ResMut<MdnsManager>>) {
+    let Some(mut mdns) = mdns else {
+        return;
+    };
     publish(&mut mdns);
     start_interface_scan(&mut mdns);
 }
 
-fn shutdown_service(exit: MessageReader<AppExit>, mdns: Res<MdnsManager>) {
+fn shutdown_service(
+    exit: MessageReader<AppExit>,
+    mdns: Option<Res<MdnsManager>>,
+    startup: Res<MdnsStartup>,
+) {
     if !exit.is_empty() {
+        if let Some(daemon) = &startup.0 {
+            let _ = daemon.shutdown();
+        }
+        let Some(mdns) = mdns else {
+            return;
+        };
         for name in mdns.registered.keys() {
             let _ = mdns.daemon.unregister(name);
         }
@@ -261,6 +320,32 @@ fn shutdown_service(exit: MessageReader<AppExit>, mdns: Res<MdnsManager>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_discovery_does_not_break_app_update_or_exit() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<PeerList>()
+            .init_resource::<Instances>()
+            .init_resource::<MdnsStartup>()
+            .add_systems(
+                Update,
+                (
+                    auto_publish_service,
+                    refresh_interfaces,
+                    listen_for_service,
+                    keep_alive_broadcast,
+                    cleanup_expired_peers,
+                )
+                    .chain(),
+            )
+            .add_systems(Last, shutdown_service);
+        app.update();
+        app.world_mut().write_message(AppExit::Success);
+        app.update();
+        assert!(app.world().resource::<PeerList>().peers.is_empty());
+        assert!(!app.world().contains_resource::<MdnsManager>());
+    }
 
     #[test]
     fn removing_one_interface_keeps_other_addresses() {
@@ -274,6 +359,7 @@ mod tests {
                         ips: vec![ip.into()],
                         os: "linux".into(),
                         port: 1234,
+                        protocol: "2".into(),
                     },
                     last_seen: Instant::now(),
                 },

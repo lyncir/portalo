@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 #[derive(Resource, Default)]
 pub(super) struct Dialogs {
-    file: Option<Task<Option<PathBuf>>>,
+    file: Option<Task<Option<portalo_network::SendSource>>>,
     directory: Option<Task<Option<PathBuf>>>,
 }
 
@@ -18,10 +18,14 @@ impl Dialogs {
     pub fn file(&mut self) {
         if self.file.is_none() {
             self.file = Some(IoTaskPool::get().spawn(async {
-                rfd::AsyncFileDialog::new()
-                    .pick_file()
-                    .await
-                    .map(|file| file.path().to_owned())
+                rfd::AsyncFileDialog::new().pick_files().await.map(|files| {
+                    portalo_network::SendSource::Batch(
+                        files
+                            .into_iter()
+                            .map(|file| portalo_network::SendSource::Path(file.path().to_owned()))
+                            .collect(),
+                    )
+                })
             }));
         }
     }
@@ -36,6 +40,17 @@ impl Dialogs {
             }));
         }
     }
+
+    pub fn send_directory(&mut self) {
+        if self.file.is_none() {
+            self.file = Some(IoTaskPool::get().spawn(async {
+                rfd::AsyncFileDialog::new()
+                    .pick_folder()
+                    .await
+                    .map(|file| portalo_network::SendSource::Path(file.path().to_owned()))
+            }));
+        }
+    }
 }
 
 pub(super) fn poll(
@@ -47,9 +62,7 @@ pub(super) fn poll(
         && let Some(path) = block_on(poll_once(task))
     {
         dialogs.file = None;
-        files.write(super::PickedFile {
-            source: path.map(portalo_network::SendSource::Path),
-        });
+        files.write(super::PickedFile { source: path });
     }
     if let Some(task) = dialogs.directory.as_mut()
         && let Some(path) = block_on(poll_once(task))

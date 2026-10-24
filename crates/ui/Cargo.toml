@@ -17,6 +17,7 @@ portalo_network.workspace = true
 # Other
 bevy.workspace = true
 tokio.workspace = true
+anyhow.workspace = true
 local-ip-address.workspace = true
 
 [target.'cfg(not(target_os = "android"))'.dependencies]

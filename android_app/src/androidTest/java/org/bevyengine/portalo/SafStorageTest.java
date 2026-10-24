@@ -114,4 +114,44 @@ public class SafStorageTest {
         try { storage.validate(tree.toString()); fail("Revoked folder must not be accepted"); }
         catch (java.io.IOException error) { assertTrue(error.getMessage().contains("重新选择")); }
     }
+
+    @Test
+    public void c_parallelCommitsPreserveBothFiles() throws Exception {
+        String name = "saf-parallel-" + UUID.randomUUID() + ".bin";
+        long a = storage.begin(tree.toString(), name);
+        long b = storage.begin(tree.toString(), name);
+        java.util.concurrent.ExecutorService workers = java.util.concurrent.Executors.newFixedThreadPool(2);
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        try {
+            write(a, new byte[] {1}); write(b, new byte[] {2});
+            java.util.concurrent.Future<?> first = workers.submit(() -> { start.await(); storage.finish(a); return null; });
+            java.util.concurrent.Future<?> second = workers.submit(() -> { start.await(); storage.finish(b); return null; });
+            start.countDown();
+            first.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            second.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            Map<String, Uri> entries = children();
+            byte[] one = read(entries.get(name));
+            byte[] two = read(entries.get(name + ".1"));
+            assertEquals(1, one.length); assertEquals(1, two.length);
+            assertEquals(3, one[0] + two[0]); assertNotEquals(one[0], two[0]);
+        } finally {
+            start.countDown(); workers.shutdownNow();
+            workers.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS);
+            storage.abort(a); storage.abort(b);
+            for (Map.Entry<String, Uri> entry : children().entrySet()) {
+                if (entry.getKey().equals(name) || entry.getKey().equals(name + ".1")) {
+                    assertTrue(DocumentsContract.deleteDocument(resolver, entry.getValue()));
+                }
+            }
+        }
+    }
+
+    @Test
+    public void d_closedStorageRejectsNewSessionsWithoutLeakingDocuments() throws Exception {
+        Map<String, Uri> before = children();
+        storage.abortAll();
+        try { storage.begin(tree.toString(), "closed-test"); fail("Closed storage accepted a session"); }
+        catch (java.io.IOException expected) { assertTrue(expected.getMessage().contains("关闭")); }
+        assertEquals(before, children());
+    }
 }

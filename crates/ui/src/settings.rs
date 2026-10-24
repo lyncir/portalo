@@ -114,7 +114,7 @@ pub fn connection_page(mut commands: Commands, local: Res<LocalDevice>) {
     text(
         &mut commands,
         body,
-        "TCP 49527 · Portalo 协议 v1\n自动发现使用 mDNS；发送与接收设备均需使用新版 Portalo。",
+        "TCP 49527 · Portalo 协议 v2\n支持目录、断点续传与任务内并行文件流；两端均需更新。",
         14.0,
         MUTED,
     );

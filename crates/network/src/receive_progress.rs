@@ -54,6 +54,13 @@ impl ReceiveProgress {
         }
         self.publish();
     }
+    #[cfg(target_os = "android")]
+    pub fn saving_bytes(&mut self, bytes: u64) {
+        if let Some((_, task)) = &mut self.tracked {
+            task.saved_bytes = Some(bytes);
+        }
+        self.publish();
+    }
 
     pub fn saved(&mut self) {
         if let Some((_, task)) = &mut self.tracked {

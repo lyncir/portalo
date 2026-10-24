@@ -17,9 +17,12 @@ pub enum TransferStatus {
     #[default]
     Idle,
     Connecting,
+    Preparing,
     Sending,
     AwaitingConfirmation,
     Complete,
+    Paused,
+    Cancelled,
     Failed(String),
 }
 
@@ -29,6 +32,7 @@ pub struct TransferProgressMsg {
     pub current: u64,
     pub total: u64,
     pub status: TransferStatus,
+    pub detail: String,
 }
 
 #[derive(Resource, Default)]
@@ -40,6 +44,7 @@ pub struct FileTransferState {
     pub last_bytes: u64,
     pub current_speed: f32,
     pub status: TransferStatus,
+    pub detail: String,
 }
 
 impl FileTransferState {
@@ -63,6 +68,7 @@ impl FileTransferState {
         matches!(
             self.status,
             TransferStatus::Connecting
+                | TransferStatus::Preparing
                 | TransferStatus::Sending
                 | TransferStatus::AwaitingConfirmation
         )

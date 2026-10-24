@@ -15,6 +15,7 @@ mod receive;
 mod send;
 mod settings;
 mod theme;
+mod transfers;
 mod widgets;
 
 #[derive(Clone)]
@@ -22,6 +23,11 @@ enum Action {
     Open(AppState),
     Select(String),
     PickFile,
+    PickFolder,
+    PauseTransfer,
+    CancelTransfer,
+    ResumeTask(String),
+    DiscardTask(String),
     Back,
     CopyAddresses,
     Accent(usize),
@@ -73,6 +79,7 @@ impl Plugin for UIPlugin {
                 TabNavigationPlugin,
                 settings::SettingsPlugin,
                 send::SendPlugin,
+                transfers::TransfersPlugin,
                 progress_bar::ProgressBarPlugin,
                 receive::ReceivePlugin,
             ))
@@ -129,6 +136,10 @@ fn navigate(
             }
             Action::Select(id) => {
                 if let Some(peer) = peers.peers.get(id) {
+                    if peer.protocol != "2" {
+                        feedback.0 = "对方协议不兼容，请升级两端。".into();
+                        continue;
+                    }
                     selected.peer = Some((id.clone(), peer.clone()));
                     feedback.0.clear();
                     next.set(AppState::Send);
@@ -185,6 +196,7 @@ mod tests {
                 ips: vec!["192.168.1.2".into()],
                 os: "android".into(),
                 port: 49527,
+                protocol: "2".into(),
             },
         );
         app.update();

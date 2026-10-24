@@ -8,20 +8,29 @@ import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Blocking provider operations. Rust calls these on its blocking I/O pool.
- * Each transfer has its own document and descriptor; only create/commit/abort
- * are serialized, not payload writes. All document mutations target our URI.
+ * Each transfer has its own lock, document and descriptor. Only commits into
+ * the same tree serialize. All document mutations target our URI.
  */
 final class SafStorage {
+    // Process-wide and bounded: one stuck provider cleanup must not prevent
+    // another session from closing, or create unbounded cleanup threads.
+    private static final java.util.concurrent.ThreadPoolExecutor CLEANUP =
+            new java.util.concurrent.ThreadPoolExecutor(0, 2, 30,
+                    java.util.concurrent.TimeUnit.SECONDS, new java.util.concurrent.SynchronousQueue<>());
     private final Context context;
-    private final Map<Long, Session> sessions = new HashMap<>();
-    private long nextId = 1;
+    private final Map<Long, Session> sessions = new ConcurrentHashMap<>();
+    private final Map<String, Object> commitLocks = new ConcurrentHashMap<>();
+    private final AtomicLong nextId = new AtomicLong(1);
+    private final Object lifecycle = new Object();
+    private boolean closed;
 
     private static final class Session {
         final Uri tree;
@@ -85,20 +94,27 @@ final class SafStorage {
         throw new IOException("无法读取所选文件夹，请重新选择");
     }
 
-    synchronized void validate(String tree) throws IOException {
+    void validate(String tree) throws IOException {
         long id = begin(tree, "probe");
         try {
             Session session = sessions.get(id);
+            if (session == null) throw new IOException("接收任务已关闭");
+            synchronized (session) {
+            if (sessions.get(id) != session) throw new IOException("接收任务已关闭");
             try (ParcelFileDescriptor.AutoCloseOutputStream output = new ParcelFileDescriptor.AutoCloseOutputStream(
                     ParcelFileDescriptor.dup(session.descriptor.getFileDescriptor()))) {
                 output.write(0);
+            }
             }
         } finally {
             abort(id);
         }
     }
 
-    synchronized long begin(String value, String name) throws IOException {
+    long begin(String value, String name) throws IOException {
+        synchronized (lifecycle) {
+            if (closed) throw new IOException("接收服务已关闭");
+        }
         Uri tree = requireTree(value);
         Uri document = null;
         ParcelFileDescriptor descriptor = null;
@@ -115,8 +131,11 @@ final class SafStorage {
             }
             descriptor = resolver().openFileDescriptor(document, "w");
             if (descriptor == null) throw new IOException("无法写入所选接收文件夹");
-            long id = nextId++;
-            sessions.put(id, new Session(tree, name, document, descriptor));
+            long id = nextId.getAndIncrement();
+            synchronized (lifecycle) {
+                if (closed) throw new IOException("接收服务已关闭");
+                sessions.put(id, new Session(tree, name, document, descriptor));
+            }
             return id;
         } catch (Exception error) {
             if (descriptor != null) try { descriptor.close(); } catch (IOException cleanup) { error.addSuppressed(cleanup); }
@@ -125,21 +144,29 @@ final class SafStorage {
         }
     }
 
-    synchronized int duplicateFd(long id) throws IOException {
-        Session session = sessions.get(id);
-        if (session == null || session.descriptor == null) throw new IOException("接收任务已关闭");
-        // Rust owns this duplicated descriptor and closes it after flush.
-        return ParcelFileDescriptor.dup(session.descriptor.getFileDescriptor()).detachFd();
-    }
-
-    synchronized void finish(long id) throws IOException {
+    int duplicateFd(long id) throws IOException {
         Session session = sessions.get(id);
         if (session == null) throw new IOException("接收任务已关闭");
+        synchronized (session) {
+        if (sessions.get(id) != session || session.descriptor == null) throw new IOException("接收任务已关闭");
+        // Rust owns this duplicated descriptor and closes it after flush.
+        return ParcelFileDescriptor.dup(session.descriptor.getFileDescriptor()).detachFd();
+        }
+    }
+
+    void finish(long id) throws IOException {
+        Session session = sessions.get(id);
+        if (session == null) throw new IOException("接收任务已关闭");
+        synchronized (session) {
+        if (sessions.get(id) != session) throw new IOException("接收任务已关闭");
         if (session.descriptor != null) {
             session.descriptor.checkError();
             session.descriptor.close();
             session.descriptor = null;
         }
+        // Only competing commits into the same tree serialize. Slow provider
+        // calls do not hold a global session-table lock.
+        synchronized (commitLocks.computeIfAbsent(session.tree.toString(), key -> new Object())) {
         // Snapshot names once, not an O(n) provider query for every suffix.
         Set<String> names = new HashSet<>();
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(session.tree,
@@ -156,11 +183,15 @@ final class SafStorage {
         if (renamed == null) throw new IOException("无法完成文件重命名，请检查目录权限");
         session.document = renamed;
         sessions.remove(id);
+        }
+        }
     }
 
-    synchronized void abort(long id) throws IOException {
-        Session session = sessions.remove(id);
+    void abort(long id) throws IOException {
+        Session session = sessions.get(id);
         if (session == null) return;
+        synchronized (session) {
+        if (!sessions.remove(id, session)) return;
         IOException failure = null;
         if (session.descriptor != null) {
             try { session.descriptor.close(); } catch (IOException error) { failure = error; }
@@ -168,15 +199,28 @@ final class SafStorage {
         try { delete(session.document); }
         catch (Exception error) { throw new IOException("无法清理未完成的接收文件：" + session.document, error); }
         if (failure != null) throw failure;
+        }
     }
 
     private void delete(Uri document) throws IOException {
         if (!DocumentsContract.deleteDocument(resolver(), document)) throw new IOException("存储提供方未删除临时文件");
     }
 
-    synchronized void abortAll() {
-        for (Long id : new HashSet<>(sessions.keySet())) {
-            try { abort(id); } catch (IOException error) { android.util.Log.e("Portalo", "Receive cleanup failed", error); }
+    void abortAll() {
+        Set<Long> pending;
+        synchronized (lifecycle) {
+            closed = true;
+            pending = new HashSet<>(sessions.keySet());
+        }
+        for (Long id : pending) {
+            try {
+                CLEANUP.execute(() -> {
+                    try { abort(id); }
+                    catch (IOException error) { android.util.Log.e("Portalo", "Receive cleanup failed", error); }
+                });
+            } catch (java.util.concurrent.RejectedExecutionException error) {
+                android.util.Log.e("Portalo", "Provider cleanup workers are blocked; document remains pending: " + id, error);
+            }
         }
     }
 }

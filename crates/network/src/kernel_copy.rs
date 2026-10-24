@@ -89,6 +89,8 @@ struct Control {
     last: Instant,
     idle: Duration,
     kernel_bytes: u64,
+    kernel_calls: u64,
+    pipe_capacity: i32,
     #[cfg(test)]
     fallback_after: Option<u64>,
 }
@@ -204,6 +206,7 @@ fn send(
                     count,
                 )
             };
+            control.kernel_calls += 1;
             if written > 0 {
                 control.advance(written as usize);
                 control.kernel_bytes += written as u64;
@@ -293,6 +296,8 @@ fn receive(
         && let Ok((read, write)) = pipe()
     {
         let mut input = File::from(read);
+        // SAFETY: the descriptor is a live pipe owned by this worker.
+        control.pipe_capacity = unsafe { libc::fcntl(input.as_raw_fd(), libc::F_GETPIPE_SZ) };
         'fast: while control.bytes() < total {
             control.check()?;
             let limit = (total - control.bytes()).min(CHUNK as u64) as usize;
@@ -307,6 +312,7 @@ fn receive(
                     libc::SPLICE_F_NONBLOCK,
                 )
             };
+            control.kernel_calls += 1;
             if pulled == 0 {
                 return incomplete(total - control.bytes());
             }
@@ -340,6 +346,7 @@ fn receive(
                         )
                     }
                 };
+                control.kernel_calls += 1;
                 if written > 0 {
                     pending -= written as usize;
                     control.advance(written as usize);
@@ -421,7 +428,12 @@ pub(super) async fn copy(
     let socket = socket.as_fd().try_clone_to_owned()?;
     // try_clone waits for any Tokio file operation before handing off ownership.
     let file = file.try_clone().await?.into_std().await;
-    let fast = std::env::var_os("PORTALO_DISABLE_ZERO_COPY").is_none();
+    let directional = match direction {
+        Direction::Send => "PORTALO_DISABLE_SENDFILE",
+        Direction::Receive => "PORTALO_DISABLE_SPLICE",
+    };
+    let fast = std::env::var_os("PORTALO_DISABLE_ZERO_COPY").is_none()
+        && std::env::var_os(directional).is_none();
     run(socket, file, size, direction, fast, super::IDLE, progress).await
 }
 
@@ -443,6 +455,8 @@ async fn run(
             last: Instant::now(),
             idle,
             kernel_bytes: 0,
+            kernel_calls: 0,
+            pipe_capacity: 0,
             #[cfg(test)]
             fallback_after: None,
         };
@@ -451,9 +465,11 @@ async fn run(
             Direction::Send => send(&mut socket, &mut file, size, &mut control, fast),
             Direction::Receive => receive(&mut socket, &mut file, size, &mut control, fast),
         };
-        bevy::log::info!(
+        bevy::log::debug!(
             ?direction,
             kernel_bytes = control.kernel_bytes,
+            kernel_calls = control.kernel_calls,
+            pipe_capacity = control.pipe_capacity,
             bytes = control.bytes(),
             "Payload copy"
         );
@@ -490,6 +506,8 @@ mod tests {
             last: Instant::now(),
             idle: Duration::from_secs(3),
             kernel_bytes: 0,
+            kernel_calls: 0,
+            pipe_capacity: 0,
             fallback_after,
         }
     }
@@ -585,7 +603,9 @@ mod tests {
         }
         let block: Vec<_> = (0..CHUNK).map(|i| (i % 251) as u8).collect();
         let size = 64 * CHUNK as u64;
-        for fast in [false, true] {
+        for (send_fast, receive_fast) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
             for round in 0..3 {
                 let mut source = tempfile::tempfile().unwrap();
                 for _ in 0..64 {
@@ -600,16 +620,16 @@ mod tests {
                 let started = Instant::now();
                 let sender = std::thread::spawn(move || {
                     let mut c = control(None);
-                    send(&mut outgoing, &mut source, size, &mut c, fast).unwrap();
+                    send(&mut outgoing, &mut source, size, &mut c, send_fast).unwrap();
                     c.kernel_bytes
                 });
                 let mut c = control(None);
-                receive(&mut incoming, &mut target, size, &mut c, fast).unwrap();
+                receive(&mut incoming, &mut target, size, &mut c, receive_fast).unwrap();
                 let sent_kernel = sender.join().unwrap();
                 let wall = started.elapsed().as_secs_f64();
                 let cpu = cpu_seconds() - cpu;
-                assert_eq!(sent_kernel, if fast { size } else { 0 });
-                assert_eq!(c.kernel_bytes, if fast { size } else { 0 });
+                assert_eq!(sent_kernel, if send_fast { size } else { 0 });
+                assert_eq!(c.kernel_bytes, if receive_fast { size } else { 0 });
                 target.rewind().unwrap();
                 let mut actual = vec![0; CHUNK];
                 for _ in 0..64 {
@@ -617,11 +637,13 @@ mod tests {
                     assert_eq!(actual, block);
                 }
                 println!(
-                    "fast={fast} round={round} MiB/s={:.1} wall_ms={:.1} cpu_ms={:.1} kernel_bytes={sent_kernel}/{}",
+                    "send_fast={send_fast} receive_fast={receive_fast} round={round} MiB/s={:.1} wall_ms={:.1} cpu_ms={:.1} kernel_bytes={sent_kernel}/{} pipe={} calls={}",
                     64.0 / wall,
                     wall * 1000.0,
                     cpu * 1000.0,
-                    c.kernel_bytes
+                    c.kernel_bytes,
+                    c.pipe_capacity,
+                    c.kernel_calls
                 );
             }
         }

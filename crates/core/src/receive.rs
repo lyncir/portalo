@@ -35,6 +35,7 @@ pub struct ReceiveTask {
     pub source: SocketAddr,
     pub total: Option<u64>,
     pub received: u64,
+    pub saved_bytes: Option<u64>,
     pub phase: ReceivePhase,
     pub started_at: Instant,
     pub updated_at: Instant,
@@ -109,6 +110,7 @@ impl ReceiveTransfers {
         ledger.next_id = ledger.next_id.checked_add(1)?;
         let now = Instant::now();
         let task = ReceiveTask {
+            saved_bytes: None,
             id: ledger.next_id,
             file_name: String::new(),
             source,

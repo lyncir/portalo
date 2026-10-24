@@ -43,6 +43,7 @@ pub(super) fn mount(commands: &mut Commands, parent: Entity) {
         .spawn(Node {
             display: Display::None,
             width: percent(100),
+            min_width: px(0),
             flex_shrink: 0.0,
             flex_direction: FlexDirection::Column,
             row_gap: px(5),
@@ -53,6 +54,7 @@ pub(super) fn mount(commands: &mut Commands, parent: Entity) {
     let list = commands
         .spawn(Node {
             width: percent(100),
+            min_width: px(0),
             flex_direction: FlexDirection::Column,
             row_gap: px(6),
             ..default()
@@ -183,12 +185,26 @@ fn visible_tasks(tasks: &[ReceiveTask]) -> Vec<&ReceiveTask> {
     }
 }
 
+fn clipped_text(commands: &mut Commands, parent: Entity, size: f32, color: Color) -> Entity {
+    let slot = commands
+        .spawn(Node {
+            width: percent(100),
+            min_width: px(0),
+            overflow: Overflow::clip(),
+            ..default()
+        })
+        .id();
+    commands.entity(parent).add_child(slot);
+    text(commands, slot, "", size, color)
+}
+
 fn card(commands: &mut Commands, parent: Entity, id: u64) -> (Entity, ReceiveCard) {
     let entity = commands
         .spawn((
             Node {
                 width: percent(100),
                 padding: UiRect::all(px(8)),
+                min_width: px(0),
                 border: UiRect::left(px(3)),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(3),
@@ -202,18 +218,30 @@ fn card(commands: &mut Commands, parent: Entity, id: u64) -> (Entity, ReceiveCar
     let header = commands
         .spawn(Node {
             width: percent(100),
+            min_width: px(0),
             align_items: AlignItems::Center,
             column_gap: px(4),
             ..default()
         })
         .id();
     commands.entity(entity).add_child(header);
-    let title = text(commands, header, "", 14.0, INK);
-    commands.entity(title).insert((
-        Node {
+    // A text node's overflow clips its descendants, not its own glyphs. Use a
+    // separate clipping parent so the title cannot draw over the close button.
+    let title_slot = commands
+        .spawn(Node {
             flex_grow: 1.0,
+            flex_basis: px(0),
             min_width: px(0),
             overflow: Overflow::clip(),
+            ..default()
+        })
+        .id();
+    commands.entity(header).add_child(title_slot);
+    let title = text(commands, title_slot, "", 14.0, INK);
+    commands.entity(title).insert((
+        Node {
+            width: percent(100),
+            min_width: px(0),
             ..default()
         },
         TextLayout::no_wrap(),
@@ -223,6 +251,7 @@ fn card(commands: &mut Commands, parent: Entity, id: u64) -> (Entity, ReceiveCar
         Node {
             display: Display::None,
             width: px(48),
+            flex_shrink: 0.0,
             min_width: px(48),
             min_height: px(48),
             padding: UiRect::all(px(4)),
@@ -233,9 +262,9 @@ fn card(commands: &mut Commands, parent: Entity, id: u64) -> (Entity, ReceiveCar
         },
         bevy::ui::InteractionDisabled,
     ));
-    let phase = text(commands, entity, "", 12.0, MUTED);
-    let bytes = text(commands, entity, "", 13.0, INK);
-    let speed = text(commands, entity, "", 13.0, MUTED);
+    let phase = clipped_text(commands, entity, 12.0, MUTED);
+    let bytes = clipped_text(commands, entity, 13.0, INK);
+    let speed = clipped_text(commands, entity, 13.0, MUTED);
     for label in [phase, bytes, speed] {
         commands.entity(label).insert((
             Node {
@@ -336,7 +365,14 @@ fn speed_text(task: &ReceiveTask, speed: f64, now: Instant) -> String {
             }
             text
         }
-        ReceivePhase::Saving => "正在写入并保存文件，请稍候…".into(),
+        ReceivePhase::Saving => match task.saved_bytes {
+            Some(bytes) => format!(
+                "正在保存：{:.1} / {:.1} MiB",
+                bytes as f64 / 1048576.0,
+                task.total.unwrap_or(0) as f64 / 1048576.0
+            ),
+            None => "正在写入并保存文件，请稍候…".into(),
+        },
         ReceivePhase::Confirming => "正在向发送方确认接收结果…".into(),
         ReceivePhase::Completed | ReceivePhase::SavedWithoutConfirmation(_) => format!(
             "耗时 {:.1} 秒 · 平均 {}/s",

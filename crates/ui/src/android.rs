@@ -104,6 +104,15 @@ pub fn pick_file() {
     }
 }
 
+pub fn pick_folder() {
+    if let Err(error) = activity_method("pickSendFolder", None) {
+        error!("Android folder picker: {error}");
+        if let Ok(mut picked) = PICKED.lock() {
+            *picked = Some(None);
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_org_bevyengine_portalo_MainActivity_nativeFilePicked(
     mut env: JNIEnv,
@@ -134,16 +143,32 @@ pub extern "system" fn Java_org_bevyengine_portalo_MainActivity_nativeFileDescri
     fd: jni::sys::jint,
     name: JString,
     size: jni::sys::jlong,
+    offset: jni::sys::jlong,
+    uri: JString,
 ) {
     use std::os::fd::FromRawFd;
     // Java detached this FD and will never close or access it again. Take
     // ownership before parsing strings so every error path closes it too.
     let source = if fd >= 0 {
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
-        if size >= 0 {
-            env.get_string(&name)
+        if size >= 0 && offset >= 0 {
+            let reopen = env
+                .get_string(&uri)
                 .ok()
-                .map(|name| portalo_network::SendSource::from_file(file, name.into(), size as u64))
+                .map(String::from)
+                .filter(|value| !value.is_empty());
+            env.get_string(&name).ok().map(|name| {
+                let mut source = portalo_network::SendSource::from_file_region(
+                    file,
+                    name.into(),
+                    offset as u64,
+                    size as u64,
+                );
+                if let portalo_network::SendSource::OpenFile { uri, .. } = &mut source {
+                    *uri = reopen.map(Into::into);
+                }
+                source
+            })
         } else {
             None
         }

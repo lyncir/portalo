@@ -3,7 +3,7 @@ use super::dialog::{self, Dialogs};
 use super::{Action, Intent, PickedFile, SelectedPeer, TransferDetails, theme::*, widgets::*};
 use bevy::prelude::*;
 use portalo_core::{AppState, FileTransferState, ProgressSender, TransferStatus};
-use portalo_network::{SendSource, TokioRuntime, send_source_fast};
+use portalo_network::{SendSource, TokioRuntime, transfer};
 
 pub struct SendPlugin;
 #[derive(Component)]
@@ -67,13 +67,21 @@ pub(super) fn setup(mut commands: Commands, selected: Res<SelectedPeer>) {
         Action::PickFile,
         true,
     );
+    action(
+        &mut commands,
+        body,
+        "选择文件夹并发送",
+        Action::PickFolder,
+        true,
+    );
+    super::transfers::mount(&mut commands, body);
     let status = text(&mut commands, body, "", 15.0, MUTED);
     commands.entity(status).insert(PickerStatus);
     #[cfg(not(target_os = "android"))]
     text(
         &mut commands,
         body,
-        "也可以将一个文件拖到此窗口\n当前支持单个文件，暂不支持文件夹。",
+        "支持拖入多个文件或文件夹。\n按块暂存并发送，需预留缓存空间并保留原文件。",
         14.0,
         MUTED,
     );
@@ -81,7 +89,7 @@ pub(super) fn setup(mut commands: Commands, selected: Res<SelectedPeer>) {
     text(
         &mut commands,
         body,
-        "本地文档优先直接发送。\n云端或未知大小的文件会先在后台缓存。",
+        "支持重开的单文件按块暂存发送。\n目录及其他来源需先缓存；请保留原文件。",
         14.0,
         MUTED,
     );
@@ -94,16 +102,26 @@ fn pick_action(
     state: Res<State<AppState>>,
 ) {
     for Intent(intent) in intents.read() {
-        if !matches!(intent, Action::PickFile) || selected.picking || *state.get() != AppState::Send
+        if !matches!(intent, Action::PickFile | Action::PickFolder)
+            || selected.picking
+            || *state.get() != AppState::Send
         {
             continue;
         }
         selected.picking = true;
         #[cfg(not(target_os = "android"))]
-        dialogs.file();
+        if matches!(intent, Action::PickFolder) {
+            dialogs.send_directory();
+        } else {
+            dialogs.file();
+        }
         #[cfg(target_os = "android")]
         {
-            super::android::pick_file();
+            if matches!(intent, Action::PickFolder) {
+                super::android::pick_folder();
+            } else {
+                super::android::pick_file();
+            }
         }
     }
 }
@@ -125,7 +143,11 @@ fn picker_status(
         }
     }
     for (entity, button, disabled) in &buttons {
-        if matches!(button.0, Action::PickFile | Action::Back) && disabled != selected.picking {
+        if matches!(
+            button.0,
+            Action::PickFile | Action::PickFolder | Action::Back
+        ) && disabled != selected.picking
+        {
             if selected.picking {
                 commands
                     .entity(entity)
@@ -143,9 +165,11 @@ fn picker_status(
 fn picked(
     mut messages: MessageReader<PickedFile>,
     mut selected: ResMut<SelectedPeer>,
+    peers: Res<portalo_discovery::PeerList>,
     runtime: Res<TokioRuntime>,
     mut next: ResMut<NextState<AppState>>,
     progress: Res<ProgressSender>,
+    control: Res<transfer::TransferControl>,
     mut transfer: ResMut<FileTransferState>,
     time: Res<Time<Real>>,
     mut details: ResMut<TransferDetails>,
@@ -166,10 +190,13 @@ fn picked(
         let Some((peer_id, peer)) = &selected.peer else {
             continue;
         };
+        // Discovery expiry is not proof that TCP is unreachable. Prefer fresh
+        // addresses, but retain the selected snapshot when multicast is absent.
+        let peer = peers.peers.get(peer_id).unwrap_or(peer);
         let id = transfer.id.wrapping_add(1);
         *transfer = FileTransferState {
             id,
-            status: TransferStatus::Connecting,
+            status: TransferStatus::Preparing,
             last_update_time: time.elapsed_secs_f64(),
             ..default()
         };
@@ -191,12 +218,50 @@ fn picked(
         let preferred = preferred.clone();
         let peer_id = peer_id.clone();
         let tx = progress.0.clone();
+        tx.send_replace(portalo_core::TransferProgressMsg {
+            id,
+            status: TransferStatus::Preparing,
+            detail: "正在建立文件清单；可重开的文件将按块暂存并发送。".into(),
+            ..default()
+        });
+        control.0.send_replace(transfer::Command::Run);
+        let control = control.0.subscribe();
         runtime.0.spawn(async move {
-            match send_source_fast(addresses, source, tx, id).await {
+            let preparation_control = control.clone();
+            let preparation_progress = tx.clone();
+            let result = async {
+                let task = tokio::task::spawn_blocking(move || {
+                    let prepared = std::cell::Cell::new(0u64);
+                    transfer::prepare_streaming_with_progress(
+                        vec![source],
+                        addresses,
+                        &preparation_control,
+                        &|bytes, path| {
+                            prepared.set(prepared.get() + bytes);
+                            preparation_progress.send_modify(|msg| {
+                                msg.detail = format!(
+                                    "正在扫描／准备来源 · 已缓存 {} MiB\n{path}",
+                                    prepared.get() / 1024 / 1024
+                                )
+                            });
+                        },
+                    )
+                })
+                .await??;
+                transfer::send(task, tx.clone(), id, control).await
+            }
+            .await;
+            match result {
                 Ok(address) => {
                     preferred.lock().unwrap().insert(peer_id, address);
                 }
-                Err(e) => error!("Send: {e:#}"),
+                Err(e) => {
+                    error!("Send: {e:#}");
+                    tx.send_modify(|msg| {
+                        msg.id = id;
+                        msg.status = TransferStatus::Failed(format!("{e:#}"));
+                    });
+                }
             }
         });
     }
@@ -223,7 +288,7 @@ fn dropped_files(
         if let bevy::window::FileDragAndDrop::DroppedFile { path_buf, .. } = event {
             // OS drop notifications may span several frames. Keep only enough
             // paths to distinguish a single file from an unsupported batch.
-            if batch.paths.len() < 2 {
+            if batch.paths.len() < 100_000 {
                 batch.paths.push(path_buf.clone());
             }
             batch.last_event = time.elapsed_secs_f64();
@@ -237,11 +302,11 @@ fn dropped_files(
         feedback.0 = "请先选择目标设备，再拖入一个文件。".into();
     } else if selected.picking || transfer.is_active() {
         feedback.0 = "请等待当前操作完成。".into();
-    } else if dropped.len() != 1 {
-        feedback.0 = "一次只支持一个文件，请逐个发送。".into();
     } else {
         files.write(PickedFile {
-            source: dropped.into_iter().next().map(SendSource::Path),
+            source: Some(SendSource::Batch(
+                dropped.into_iter().map(SendSource::Path).collect(),
+            )),
         });
     }
 }
@@ -250,7 +315,7 @@ fn dropped_files(
 mod tests {
     use super::*;
     #[test]
-    fn multi_file_drop_across_frames_is_rejected_without_sending_first_file() {
+    fn multi_file_drop_across_frames_is_collected_into_one_task() {
         let mut app = App::new();
         app.add_plugins(bevy::state::app::StatesPlugin)
             .insert_state(AppState::Send)
@@ -281,13 +346,16 @@ mod tests {
             .resource_mut::<Time<Real>>()
             .advance_by(std::time::Duration::from_millis(200));
         app.update();
-        assert_eq!(app.world().resource::<Messages<PickedFile>>().len(), 0);
-        assert!(
-            app.world()
-                .resource::<Feedback>()
-                .0
-                .contains("一次只支持一个文件")
-        );
+        let messages = app.world().resource::<Messages<PickedFile>>();
+        let mut cursor = messages.get_cursor();
+        let source = cursor
+            .read(messages)
+            .next()
+            .unwrap()
+            .source
+            .as_ref()
+            .unwrap();
+        assert!(matches!(source,SendSource::Batch(paths) if paths.len()==2));
         app.world_mut()
             .write_message(bevy::window::FileDragAndDrop::DroppedFile {
                 window,

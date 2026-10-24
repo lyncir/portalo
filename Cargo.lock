@@ -2894,6 +2894,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4791,16 +4801,24 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bevy",
+ "blake3",
+ "fs2",
  "libc",
  "portalo_core",
+ "same-file",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "portalo_ui"
 version = "0.0.1"
 dependencies = [
+ "anyhow",
  "arboard",
  "bevy",
  "jni 0.21.1",
