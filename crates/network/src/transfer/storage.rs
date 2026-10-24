@@ -1,4 +1,5 @@
 use super::{BLOCK, Entry, Manifest, SavedTask, model::Receipt};
+use anyhow::Context;
 use fs2::FileExt;
 use std::{
     collections::{HashMap, HashSet},
@@ -42,13 +43,21 @@ pub(super) fn preparation_lock(wait: bool) -> anyhow::Result<File> {
 }
 pub(super) fn save<T: serde::Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
     let parent = path.parent().unwrap();
-    fs::create_dir_all(parent)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("无法创建任务记录目录：{}", parent.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("无法创建临时任务记录：{}", path.display()))?;
     serde_json::to_writer(&mut tmp, value)?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
+    tmp.as_file()
+        .sync_all()
+        .with_context(|| format!("无法同步任务记录：{}", path.display()))?;
+    tmp.persist(path)
+        .map_err(|e| e.error)
+        .with_context(|| format!("无法发布任务记录：{}", path.display()))?;
     #[cfg(unix)]
-    File::open(parent)?.sync_all()?;
+    File::open(parent)
+        .and_then(|file| file.sync_all())
+        .with_context(|| format!("无法同步任务记录目录：{}", parent.display()))?;
     Ok(())
 }
 pub fn tasks() -> anyhow::Result<Vec<SavedTask>> {
@@ -888,8 +897,13 @@ impl Session {
             )
         };
         let _time = super::metrics::measure(&self.metrics.sync);
-        for payload in dirty.values() {
-            payload.file.lock().unwrap().sync_all()?;
+        for (&id, payload) in &dirty {
+            payload.file.lock().unwrap().sync_all().with_context(|| {
+                format!(
+                    "无法同步接收文件：{}",
+                    self.manifest.entries[id].path.join("/")
+                )
+            })?;
         }
         let mut next = self.receipt.lock().unwrap().clone();
         next.offsets = offsets.clone();
@@ -934,17 +948,23 @@ impl Session {
         if receipt.direct.is_none() {
             for (index, entry) in self.manifest.entries.iter().enumerate().rev() {
                 if entry.directory {
-                    File::open(self.manifest.path(&self.root, index))?.sync_all()?;
+                    let path = self.manifest.path(&self.root, index);
+                    File::open(&path)
+                        .and_then(|file| file.sync_all())
+                        .with_context(|| format!("无法同步接收子目录：{}", path.display()))?;
                 }
             }
-            File::open(&self.root)?.sync_all()?;
+            File::open(&self.root)
+                .and_then(|file| file.sync_all())
+                .with_context(|| format!("无法同步接收暂存目录：{}", self.root.display()))?;
         }
         let result = if receipt.direct.is_some() {
             #[cfg(target_os = "android")]
             {
                 portalo_core::android_storage::publish_transfer_target(
                     &self.journal.parent().unwrap().to_string_lossy(),
-                )?
+                )
+                .context("SAF 直写文件最终发布失败")?
             }
             #[cfg(not(target_os = "android"))]
             {
@@ -966,7 +986,8 @@ impl Session {
                     &self.root.to_string_lossy(),
                     &self.manifest.name,
                     &self.manifest.id,
-                )?
+                )
+                .context("SAF 暂存文件复制或最终发布失败")?
             }
             #[cfg(not(target_os = "android"))]
             {
@@ -1005,8 +1026,18 @@ impl Session {
                     receipt.publishing = true;
                     save(&self.journal, &*receipt)?;
                     let result = if single {
-                        fs::hard_link(self.manifest.path(&self.root, 0), &receipt.target)
-                            .map_err(anyhow::Error::from)
+                        let source = self.manifest.path(&self.root, 0);
+                        // Android app-data SELinux policy may reject hard links
+                        // even when ordinary reads/writes are permitted. Rename
+                        // within the receive filesystem without replacing users' files.
+                        #[cfg(target_os = "android")]
+                        let result = publish(&source, &receipt.target);
+                        #[cfg(not(target_os = "android"))]
+                        let result =
+                            fs::hard_link(&source, &receipt.target).map_err(anyhow::Error::from);
+                        result.with_context(|| {
+                            format!("无法发布接收文件：{}", receipt.target.display())
+                        })
                     } else {
                         publish(&self.root, &receipt.target)
                     };
@@ -1024,7 +1055,9 @@ impl Session {
                 }
             }
             #[cfg(unix)]
-            File::open(receipt.target.parent().unwrap())?.sync_all()?;
+            File::open(receipt.target.parent().unwrap())
+                .and_then(|file| file.sync_all())
+                .context("无法同步最终接收目录")?;
             receipt.target.display().to_string()
         };
         receipt.result = Some(result.clone());
@@ -1043,7 +1076,31 @@ impl Session {
         }
         if self.manifest.layout == super::Layout::File {
             let source = self.manifest.path(&self.root, 0);
-            return Ok(source.exists() && same_file::is_same_file(source, &receipt.target)?);
+            if source.try_exists()? {
+                return Ok(same_file::is_same_file(source, &receipt.target)?);
+            }
+            // Rename can complete before the completion record is persisted.
+            // Only a durable publication intent plus a complete content check
+            // permits recovery when the staging file is already gone.
+            anyhow::ensure!(receipt.publishing, "Missing publication intent");
+            anyhow::ensure!(
+                fs::symlink_metadata(&receipt.target)?.file_type().is_file(),
+                "Published target is not a regular file"
+            );
+            let entry = &self.manifest.entries[0];
+            let hashes = if self.manifest.streaming {
+                &receipt.hashes[0]
+            } else {
+                &entry.blocks
+            };
+            let _time = super::metrics::measure(&self.metrics.hash);
+            verify_file(
+                &mut File::open(&receipt.target)?,
+                entry,
+                hashes,
+                &mut vec![0; BLOCK],
+            )?;
+            return Ok(true);
         }
         if self.root.exists() {
             return Ok(false);
@@ -1212,7 +1269,7 @@ fn inventory(
     }
     Ok(())
 }
-fn publish(source: &Path, target: &Path) -> anyhow::Result<()> {
+pub(super) fn publish(source: &Path, target: &Path) -> anyhow::Result<()> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         use std::os::unix::ffi::OsStrExt;

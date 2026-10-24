@@ -342,6 +342,74 @@ fn single_file_collision_and_crash_after_link_recover_without_duplicate() {
 }
 
 #[test]
+fn single_file_rename_publication_recovers_and_rejects_changed_content() {
+    for streaming in [false, true] {
+        for corrupt in [false, true] {
+            let state = tempfile::tempdir().unwrap();
+            let destination = tempfile::tempdir().unwrap();
+            let data = b"new bytes";
+            let mut m = manifest(data);
+            m.name = "photo.png".into();
+            m.entries[0].path = vec![m.name.clone()];
+            m.layout = Layout::File;
+            m.streaming = streaming;
+            if streaming {
+                m.entries[0].blocks.clear();
+            }
+            let open = || {
+                storage::Session::open_at(
+                    state.path().to_owned(),
+                    m.clone(),
+                    "a".repeat(64),
+                    ReceiveDestination::Directory(destination.path().to_owned()),
+                )
+            };
+            let s = open().unwrap();
+            if streaming {
+                let payload = s.open_payload(0).unwrap();
+                s.write_stream_block(&payload, 0, data, &blake3::hash(data).to_hex().to_string())
+                    .unwrap();
+            } else {
+                s.block(0, 0, data).unwrap();
+            }
+            s.flush().unwrap();
+            let target = destination.path().join("photo.png.1");
+            let existing = destination.path().join("photo.png");
+            fs::write(&existing, b"user file").unwrap();
+            let source = m.path(&s.root, 0);
+            assert!(storage::publish(&source, &existing).is_err());
+            assert!(source.exists());
+            {
+                let mut receipt = s.receipt.lock().unwrap();
+                receipt.target = target.clone();
+                receipt.publishing = true;
+                storage::save(&s.journal, &*receipt).unwrap();
+                storage::publish(&source, &target).unwrap();
+            }
+            assert!(!source.exists());
+            drop(s);
+            if corrupt {
+                fs::write(&target, b"bad bytes").unwrap();
+                assert!(open().is_err());
+                assert_eq!(fs::read(&target).unwrap(), b"bad bytes");
+            } else {
+                let restored = open().unwrap();
+                assert_eq!(std::path::Path::new(&restored.commit().unwrap()), target);
+                assert_eq!(fs::read(&target).unwrap(), data);
+                assert!(!restored.root.exists());
+            }
+            assert_eq!(fs::read(&existing).unwrap(), b"user file");
+            // Failed verification retains the task's staging directory so the
+            // user can inspect/recover it; successful publication cleans it.
+            assert_eq!(
+                fs::read_dir(destination.path()).unwrap().count(),
+                if corrupt { 3 } else { 2 }
+            );
+        }
+    }
+}
+
+#[test]
 fn legacy_manifest_digest_is_unchanged() {
     let m = manifest(b"abc");
     let json = serde_json::to_vec(&m).unwrap();
