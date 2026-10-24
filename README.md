@@ -124,7 +124,7 @@ cargo ndk -t arm64-v8a -P 26 clippy --locked --workspace -- -D warnings
 cargo xwin clippy --locked --target x86_64-pc-windows-msvc --workspace -- -D warnings
 ```
 
-移除旧协议后，62 项 Rust 单元测试通过，1 项手动基准默认忽略。此前的 PORTALO2 流水线版本已通过三端 Release 构建及 Android 真机流式发送、暂停续传和文件完整性验证。Windows 原生运行和 ReFS 尚待实机验证；具体检查状态与性能测量口径见 [内部实现与验证记录](INTERNALS.md#验证范围与实测记录)。
+移除旧协议后，62 项 Rust 单元测试、三端严格 Clippy 与 Release 构建通过，1 项手动基准默认忽略。Android 新版覆盖安装后通过 7 项真机自动化测试，以及 160 MiB 多文件传输、重启续传和发布恢复验证；Linux、Android 均验证拒绝旧协议。Windows 原生运行和 ReFS 尚待实机验证；具体检查状态与性能测量口径见 [内部实现与验证记录](INTERNALS.md#验证范围与实测记录)。
 
 ## 安装包与发布
 

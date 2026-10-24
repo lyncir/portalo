@@ -243,12 +243,14 @@ adb -s DEVICE shell am instrument -w -r \
 | Rust workspace lib 测试 | 移除旧协议后 62 项通过，1 项手动基准忽略；包含旧魔数拒绝且不创建输出的回归 |
 | 严格 Clippy | Linux all-targets、Android/Windows workspace 通过 |
 | Android Java 编译 | 移除旧协议后应用及 instrumentation 测试编译通过；目录验证不再依赖旧接收会话 |
-| 历史 Release 构建 | 移除旧协议前的流水线版本：Linux x86_64、Windows x86_64 MSVC、Android arm64 Rust 库通过；Debug APK 打包与覆盖安装通过 |
-| 历史 Android 真机 | Sony J9110 / Android 11；来源重开、准备取消、SAF 直写/兼容发布及恢复用例通过；移除旧协议后尚未重新实机验证 |
+| Release 构建 | 移除旧协议后 Linux x86_64、Windows x86_64 MSVC、Android arm64 Rust 库通过；Debug APK 打包与覆盖安装通过 |
+| Android 真机 | Sony J9110 / Android 11；移除旧协议后 PreparationTest、SendDocumentsTest、TransferDocumentsTest 共 7 项通过；SafStorageTest 的专用目录套件本轮未运行 |
 | Linux 启动与发现 | GUI 启动通过；注入 mDNS EPERM 后不崩溃，解除注入后恢复；Android 冷启动及后台返回验证通过 |
 | Windows 原生运行 | 尚未验证 `TransmitFile` 和 ReFS 实机行为；交叉构建不能替代运行验证 |
 
 Rust 回归覆盖并行目录/空文件/空目录、半帧断线、暂停重启、损坏检查点回退、源替换、文档非零区域、会话互斥、取消排空、完成确认丢失、发布缺口、清单兼容及有界预取。发送队列测试验证前一块未被 socket 消费时，下一块已进入校验。缓冲回退路径也完成了暂停续传回归。
+
+移除旧协议后的 Release 验证：Linux GUI 启动和 5 轮 64 MiB 回环内容比对通过；Linux、Android 实际连接发送旧魔数均被立即关闭。Linux → Android SAF 直写 160 MiB 多文件、空文件和嵌套空目录完整 SHA-256/结构验证通过，准备到确认约 4.56 秒；另一个任务在 4 MiB 持久偏移暂停、重启手机应用后恢复并通过完整校验，发布结果记录缺口恢复返回同一目标。仅清理独立 UUID 测试输出，手机设置保持一致。
 
 ### 1 GiB Android → Linux 性能对比
 
