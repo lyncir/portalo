@@ -1,156 +1,142 @@
 # Portalo
 
-局域网文件传输工具。参考 Dukto R6 的 Metro 风格界面，支持 Linux、Windows 和 Android。
+局域网文件传输工具，支持 Linux、Windows 和 Android。界面参考 Dukto R6 的 Metro 风格。
 
-## 功能
+- 自动发现同一局域网内的设备，可同时发送和接收。
+- 发送单文件、多文件或整个文件夹，保留空目录。
+- 分块校验，支持暂停、断线及重启后继续。
+- Android 使用系统文件选择器（SAF），可指定接收文件夹。
 
-- 自动发现局域网内的其他 Portalo 设备（mDNS）
-- 支持同时收发，接收进度实时显示在页面底部
-- Android 通过 SAF 系统选择器选择接收文件夹并持久授权
-- 文件、多文件和整目录传输，包含空目录；单任务最多四条并行文件流
-- 分块校验、暂停、断线/重启后继续，以及完成确认去重
+## 快速使用
 
-## 使用
+1. 在两台设备上打开 Portalo，确保连接同一局域网，并使用支持当前协议的版本。
+2. 在 **附近设备** 中选择接收设备。
+3. 点击 **选择文件并发送** 或 **选择文件夹并发送**。桌面端也支持拖入文件和文件夹。
+4. 等待 **传输完成，对方已确认接收**。进度达到 100% 后，可能仍需保存和确认。
 
-### 界面与操作
+接收任务显示在页面底部，不切换当前页面。最多同时显示两张进度卡片，保留 8 条历史结果；关闭卡片不会删除文件。
 
-- **附近设备**：自动列出局域网内的其他 Portalo。点击设备进入发送页。
-- **发送文件**：选择目标设备后，多选文件或点击“选择文件夹并发送”（桌面也支持拖入多个文件/目录）。
-  发送时使用设备最新发现的地址；Android 文件准备显示已缓存大小，可取消，30 秒无进展会结束等待。
-- **文件传输**：显示进度、速度、剩余时间；数据传完后等待对方确认，收到 ACK 才显示完成。
-- **暂停/继续**：暂停保留检查点；重新进入发送页，在“未完成任务”中继续。重启应用后仍可恢复，需选择原接收设备。取消需连接接收端确认清理；离线时保留任务以便稍后清理。
-- **连接信息**：本机名称、IP 地址、端口及协议说明。
-- **设置**：切换主题色（橙/蓝/绿），设置接收目录。
+### 暂停、继续与取消
 
-键盘：`Tab`/`Shift+Tab` 切换焦点，`Enter`/`Space` 执行，`Esc`/系统返回键后退，`PageUp`/`PageDown` 滚动。
+- **暂停**：保留任务和已保存进度。
+- **继续**：选择原接收设备，在发送页的“未完成任务”中点击继续；重启应用后也可恢复。
+- **断线**：重新连接后由用户点击继续；少量未持久化数据可能需要重传。
+- **取消**：需连接接收端确认清理。离线时保留任务，方便稍后清理；已发布的文件不会因取消被删除。
 
-### 接收通知
+### 文件准备与保存规则
 
-接收任务显示在页面底部，不切换页面，可以边浏览边接收。
+**传输完成前，请保留原文件且勿修改或移动。** 流式发送会边暂存、边校验、边发送，尚未暂存的部分仍依赖原文件。
 
-- 最多同时两张进度卡片，最多保留 8 条历史结果。
-- 状态：**正在接收 → 正在保存 → 文件已保存，正在确认 → 接收完成**。
-- 到达 100% 不等于完成，仍须保存并写回 ACK。
-- 关闭卡片只移除通知，不删除已保存的文件。
+| 来源 | 准备方式 |
+| --- | --- |
+| 桌面普通文件和目录中的文件 | 先建立清单，再分块准备，无需预先读取整个大文件 |
+| Android 单选、可持久授权且支持定位读取的已知长度文件 | 分块准备；重启后可重新打开原文档 |
+| Android 文件夹、多选、未知长度或不可重新打开的来源 | 先导出或缓存，再发送 |
 
-### 配置与接收目录
+- 发送端需预留所选内容大小的暂存空间；扫描或准备尚未建立任务时中断，需要重新选择。
+- 单文件保存到接收目录；文件夹保留原名；多文件批量保存到任务目录。
+- 同名目标追加 `.1`、`.2` 等后缀，续传沿用原目标。
+- 完成记录保存在应用内部，不生成 `.portalo-receipt`，也不会自动清理用户已有文件或旧标记。
+- 不跟随符号链接；不支持的文件名、跨平台名称冲突及 `.portalo-` 保留前缀会明确报错。
+
+### Android 接收文件夹
+
+1. 打开 **设置 → 选择接收文件夹**。
+2. 在系统选择器中进入目标目录，点击 **使用此文件夹** 并授权。
+3. 验证成功后，设置页显示文件夹名称和 URI；重启后无需再次授权。
+
+Android 11+ 通常禁止选择存储根、`Download` 根及 `Android/data` 等位置，请选择允许的子目录。授权撤销或目录删除后会明确报错。
+
+支持的本机存储可直接接收到临时文档，完成后重命名；其他提供方可能需要内部暂存后再复制，需同时预留内部和目标存储空间。传输中可见 `.portalo-<任务ID>.part`，完成后消失。
+
+### 配置与快捷键
 
 | 平台 | 配置文件 |
 | --- | --- |
-| Linux | `$XDG_CONFIG_HOME/portalo/settings.json`（默认 `~/.config/portalo/`） |
+| Linux | `$XDG_CONFIG_HOME/portalo/settings.json`，默认 `~/.config/portalo/settings.json` |
 | Windows | `%APPDATA%\portalo\settings.json` |
-| Android | 应用内部数据目录 |
+| Android | 应用内部数据目录中的 `settings.json` |
 
-`PORTALO_DOWNLOAD_DIR` 环境变量在启动时覆盖已保存的接收目录；移除该变量后 UI 设置恢复生效。
+设置页支持主题色和接收目录。`PORTALO_DOWNLOAD_DIR` 在启动时覆盖已保存的接收目录，移除变量后恢复使用 UI 设置。目录更改对后续接收生效，已有任务沿用原目标。
 
-接收服务在每个连接建立时读取当前目录，设置更改立即对后续接收生效，正在进行的接收继续使用原目录。
-
-### Android SAF 接收文件夹
-
-1. 打开 Portalo → **设置 → 选择接收文件夹**。
-2. 在系统选择器中进入目标目录，点击"使用此文件夹"并允许读写。
-3. Portalo 校验写入、重命名能力；成功后设置页显示文件夹名称和 URI。
-4. 授权持久化，重启应用后无需再次授权。
-
-Android 11+ 通常禁止选择存储根、`Download` 根、`Android/data` 等位置，需选择允许的子目录。
-授权撤销或目录删除后接收会明确失败并提示，不会静默回退到内部目录。
-
-### 可恢复传输的存储语义
-
-- 普通文件先建立清单，再按 4 MiB 块暂存、校验并发送，无需先完整复制和哈希整个大文件。Linux/Android 优先 reflink，Windows 优先支持的块克隆；否则逐块复制。**传输完成前请保留原文件且勿修改**：尚未暂存的部分仍依赖原文件，变化会报错；已暂存块可稳定重传。仍需预留所选内容大小的空间，扫描阶段中断需重新选择。收发两端需更新到支持流式准备的版本。
-- Android 已完成的私有导出缓存优先通过硬链接复用为任务快照，减少第二次缓存复制；原缓存清理不会删除任务数据。不支持硬链接时回退；用户原文件不采用这种复用方式。
-- Android 单选文件若提供方支持持久 URI 授权、已知长度及定位读取，也按块暂存发送，重启后重新打开同一 URI；不再先复制整个大文件。无法持久重开、未知长度或管道来源仍先缓存；目录与多选仍需先导出。源被移动、修改或授权失效会报错，保留已捕获块。
-- 每 4 MiB 校验；累计 32 MiB 或约 1 秒提交持久化检查点，暂停、文件结束和发布前也会提交。断线时尚未持久化的数据可能重传。续传由用户点击触发。
-- 单文件直接保存到接收目录；文件夹保留原名；多文件批量使用任务目录。同名按 `.1`、`.2` 编号，续传不改变目标。
-- 目录内容完整后才发布；不生成 `.portalo-receipt`，恢复和完成记录保存在应用内部。异常发布恢复严格核验完整目录结构与文件哈希，不兼容旧标记目录。
-- 发送目录不会自动过滤旧标记；`.portalo-` 保留前缀按不支持的路径报错，普通隐藏文件正常发送。应用不会自动删除已有目录中的文件。
-- Android SAF 新任务对本机外部存储提供方实际探测随机读写、截断、同步及文件/目录重命名能力；通过后直接写目标临时文档，结束时重命名，免去二次复制。其他提供方或不支持这些能力时保留内部暂存兼容路径，需要两份空间；旧任务保持原后端。传输期间可见 `.portalo-<任务ID>.part`，完成后消失。保存期间每 10 秒报告存活，兼容复制路径另报实际复制进度。
-- Linux/Android 新协议发送载荷使用 `sendfile`；Windows 优先使用 `TransmitFile` 从系统文件缓存发送，不支持时回退至有界缓冲。分块校验仍需读取文件；接收端为校验使用有界缓冲，SAF 兼容路径的二次复制优先使用 `FileChannel.transferTo`，不是端到端零拷贝。
-- 新端协商每文件最多两块在途数据，让网络与校验写入重叠；连接旧端使用一块窗口。活跃文件复用 FD，检查点在后台按批次同步，不持有任务级写入锁。Windows 缓冲发送按帧共享已核验数据块，减少逐帧分配和复制。
-- 不跟随符号链接；跨平台名称冲突、Windows 保留名、不支持的路径和超限清单会明确报错。
-
-本轮已通过 Rust 单元测试、三端严格 Clippy 检查及 Linux/Windows/Android Release 构建，Android 真机自动化测试通过。Windows 原生发送与 ReFS 尚未在 Windows 实机运行；详细验证范围见 [INTERNALS.md](INTERNALS.md)。
+快捷键：`Tab` / `Shift+Tab` 切换焦点，`Enter` / `Space` 执行，`Esc` / 系统返回键后退，`PageUp` / `PageDown` 滚动。
 
 ## 构建
 
-工具链：Rust **1.97.1**（`rust-toolchain.toml` 与 CI 固定）、Bevy **0.20.0**。
+Rust **1.97.1**（见 `rust-toolchain.toml`），Bevy **0.20.0**。以下命令从仓库根目录执行，依赖通过 `Cargo.lock` 和 `--locked` 固定。
 
-### Linux
+### Linux x86_64
+
+Debian / Ubuntu 构建依赖与 CI 一致：
 
 ```sh
-# 开发运行
-cargo run --features bevy/dynamic_linking
+sudo apt-get install g++ pkg-config libx11-dev libasound2-dev libudev-dev \
+  libxkbcommon-dev libxkbcommon-x11-0 libwayland-dev
 
-# Release 构建
-cargo build --release --bin portalo
+# 开发运行
+cargo run --locked --features bevy/dynamic_linking
+
+# Release
+cargo build --locked --release --bin portalo
 ./target/release/portalo
 ```
 
-### Windows（从 Linux 交叉编译）
+### Windows x86_64（从 Linux 交叉编译）
 
 ```sh
-cargo install cargo-xwin
+sudo apt-get install clang llvm lld
+cargo install cargo-xwin --locked
 rustup target add x86_64-pc-windows-msvc
-cargo xwin build --release --target x86_64-pc-windows-msvc
+cargo xwin build --locked --release --target x86_64-pc-windows-msvc --bin portalo
 ```
 
-### Android
+产物：`target/x86_64-pc-windows-msvc/release/portalo.exe`。
+
+### Android arm64
+
+安装 JDK 17、Android SDK 命令行工具，并设置 `ANDROID_HOME`：
 
 ```sh
 rustup target add aarch64-linux-android
-cargo install cargo-ndk
-# 安装 SDK/NDK（按需替换版本）
-sdkmanager "platforms;android-26" "platform-tools" "ndk;27.0.12077973"
+cargo install cargo-ndk --version 4.1.2 --locked
+sdkmanager "platforms;android-34" "platform-tools" "build-tools;34.0.0" \
+  "ndk;27.0.12077973" "cmake;3.22.1"
+export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
 
-# 构建 Rust 库
-cargo ndk -t arm64-v8a -P 26 -o android_app/src/main/jniLibs build --release --package portalo --lib
+cargo ndk -t arm64-v8a -P 26 -o android_app/src/main/jniLibs \
+  build --locked --release --package portalo --lib
 
-# 在 android_app 目录打包和安装
 cd android_app
 bash gradlew assembleDebug
-./gradlew installDebug
-
-# 查看日志
-adb logcat | grep 'RustStdoutStderr\|bevy\|wgpu'
+bash gradlew installDebug
 ```
 
-产物：`android_app/build/outputs/apk/debug/Portalo-debug.apk`（内含 release 优化的 Rust 库）。
+产物：`android_app/build/outputs/apk/debug/Portalo-debug.apk`。这是包含 Release 优化 Rust 库的 Debug APK，最低支持 Android API 26。
 
-## 验证
+仓库中的 `android_app/debug.keystore` 为固定测试签名（密码 `android`）。使用同一签名的 APK 可覆盖安装；不同签名无法直接覆盖，迁移前应备份数据。
+
+## 检查与验证
 
 ```sh
 cargo test --locked --workspace --lib
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo ndk -t arm64-v8a -P 26 clippy --locked --workspace -- -D warnings
-cargo xwin check --locked --target x86_64-pc-windows-msvc --workspace
+cargo xwin clippy --locked --target x86_64-pc-windows-msvc --workspace -- -D warnings
 ```
 
-## CI 与发布
+移除旧协议后，62 项 Rust 单元测试通过，1 项手动基准默认忽略。此前的 PORTALO2 流水线版本已通过三端 Release 构建及 Android 真机流式发送、暂停续传和文件完整性验证。Windows 原生运行和 ReFS 尚待实机验证；具体检查状态与性能测量口径见 [内部实现与验证记录](INTERNALS.md#验证范围与实测记录)。
 
-推送 `master`/`main`、提交 PR 或手动触发工作流，在 `ubuntu-latest` 上构建 Linux x86_64、Windows x86_64 和 Android arm64 Debug APK。推送 `v*` 标签时，三端全部成功后自动发布 GitHub Release。
+## 安装包与发布
 
-依赖通过 `Cargo.lock` 与 `--locked` 锁定；Rust 固定为 1.97.1。
+- CI 在推送 `master` / `main`、提交 PR 或手动触发时构建 Linux、Windows 和 Android 包。
+- 推送 `v*` 标签后，三端构建全部成功才发布 GitHub Release。
+- Linux 安装包解压后运行 `bash install.sh`：普通用户安装到 `~/.local`，root 安装到 `/usr/local`。
+- Linux 产物动态链接 glibc，并非 AppImage；可用 `ldd portalo` 检查缺少的运行库。
 
-## Linux 安装包
+## 连接与协议
 
-解压后运行 `bash install.sh`，默认安装到 `~/.local`；以 root 运行则安装到 `/usr/local`。
+Portalo 使用 mDNS 自动发现设备，TCP 端口为 **49527**。找不到设备时，检查同网段连接、无线客户端隔离和防火墙设置。
 
-```sh
-# 终端直接运行
-~/.local/bin/portalo
-```
+收发均仅支持 **PORTALO2**，请同时更新两端。不再接受旧版协议连接。
 
-构建产物动态链接 glibc，不是 AppImage；运行时需要兼容的 glibc、图形驱动和系统库。可用 `ldd portalo` 检查缺少的库。
-
-## Android APK 签名
-
-`android_app/debug.keystore` 是仓库内的固定测试签名（密码 `android`），仅用于 Debug 包。
-使用该密钥构建的 APK 可相互覆盖安装；之前使用其他密钥签名的旧版本无法直接覆盖，迁移前请备份数据。
-
-## 协议
-
-TCP 端口 **49527**，发送使用 **PORTALO2**，发现信息标记版本 2，请同时更新两端。接收器仍保留 PORTALO1 兼容入口，但旧协议没有续传和目录能力。
-
-Windows 接收端会拒绝驱动器前缀、设备保留名、冒号及其他不受支持的文件名，避免特殊路径被当成普通文件保存。
-
-实现细节、零拷贝路径、SAF 存储语义和基准数据见 [INTERNALS.md](INTERNALS.md)。
+协议、存储恢复、平台后端与诊断说明见 [INTERNALS.md](INTERNALS.md)。

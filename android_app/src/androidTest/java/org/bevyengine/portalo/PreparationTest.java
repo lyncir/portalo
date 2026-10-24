@@ -73,9 +73,9 @@ public class PreparationTest {
     @Test
     public void closedStorageRejectsBeforeParsingProviderUri() throws Exception {
         SafStorage storage = new SafStorage(InstrumentationRegistry.getInstrumentation().getTargetContext());
-        storage.abortAll();
+        storage.close();
         try {
-            storage.begin("not-a-provider-uri", "test");
+            storage.validate("not-a-provider-uri");
             fail("Closed storage accepted an operation");
         } catch (IOException expected) {
             assertTrue(expected.getMessage().contains("关闭"));

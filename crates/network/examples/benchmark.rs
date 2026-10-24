@@ -1,6 +1,8 @@
 //! Repeatable loopback throughput smoke test. Not a Wi-Fi or cold-disk benchmark.
+//! Uses PORTALO2 preparation/checkpoints; use an isolated XDG_CONFIG_HOME for
+//! the small durable task records retained after each completed transfer.
 use portalo_core::TransferProgressMsg;
-use portalo_network::{send_file_fast, start_file_receiver};
+use portalo_network::{SendSource, start_file_receiver, transfer};
 use std::time::Instant;
 use tokio::{net::TcpListener, sync::watch};
 
@@ -21,7 +23,19 @@ async fn main() -> anyhow::Result<()> {
         });
         let (tx, _rx) = watch::channel(TransferProgressMsg::default());
         let started = Instant::now();
-        send_file_fast(vec![address], &path, tx, round).await?;
+        let source = path.clone();
+        let (_control, receiver) = watch::channel(transfer::Command::Run);
+        let preparation = receiver.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            transfer::prepare_streaming_with_progress(
+                vec![SendSource::Path(source)],
+                vec![address],
+                &preparation,
+                &|_, _| {},
+            )
+        })
+        .await??;
+        transfer::send(task, tx, round, receiver).await?;
         receiving.await??;
         let seconds = started.elapsed().as_secs_f64();
         let speed = 64.0 / seconds;

@@ -128,10 +128,6 @@ public class MainActivity extends GameActivity {
     private native void nativeDirectoryPicked(String uri, String label, String error);
 
     public void validateReceiveTree(String uri) throws java.io.IOException { receiveStorage.validate(uri); }
-    public long beginReceiveDocument(String uri, String name) throws java.io.IOException { return receiveStorage.begin(uri, name); }
-    public int receiveDocumentFd(long id) throws java.io.IOException { return receiveStorage.duplicateFd(id); }
-    public void finishReceiveDocument(long id) throws java.io.IOException { receiveStorage.finish(id); }
-    public void abortReceiveDocument(long id) throws java.io.IOException { receiveStorage.abort(id); }
     public String publishTransfer(String tree, String path, String name, String id) throws Exception {
         return TransferDocuments.publish(this, tree, new File(path), name, id);
     }
@@ -395,7 +391,7 @@ public class MainActivity extends GameActivity {
         preparationUi.removeCallbacksAndMessages(null);
         preparations.shutdown();
         if (multicastLock != null && multicastLock.isHeld()) multicastLock.release();
-        receiveStorage.abortAll();
+        receiveStorage.close();
         fileWorker.shutdown();
         super.onDestroy();
     }

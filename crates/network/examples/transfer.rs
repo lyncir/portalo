@@ -1,6 +1,8 @@
-//! Headless real-protocol benchmark: transfer receive DIR / transfer send ADDRESS FILE
+//! Headless PORTALO2 transfer: transfer receive DIR / transfer send ADDRESS FILE.
+//! Use an isolated XDG_CONFIG_HOME for test task records. Failed sends remain
+//! resumable through the send_task example or the normal UI.
 use portalo_core::TransferProgressMsg;
-use portalo_network::{send_file_fast, start_file_receiver};
+use portalo_network::{SendSource, start_file_receiver, transfer};
 use std::{path::PathBuf, time::Instant};
 use tokio::{net::TcpListener, sync::watch};
 
@@ -24,7 +26,20 @@ async fn main() -> anyhow::Result<()> {
             let (tx, _rx) = watch::channel(TransferProgressMsg::default());
             let size = tokio::fs::metadata(&args[3]).await?.len();
             let start = Instant::now();
-            send_file_fast(vec![args[2].parse()?], &args[3], tx, 1).await?;
+            let address = args[2].parse()?;
+            let path = PathBuf::from(&args[3]);
+            let (_control, receiver) = watch::channel(transfer::Command::Run);
+            let preparation = receiver.clone();
+            let task = tokio::task::spawn_blocking(move || {
+                transfer::prepare_streaming_with_progress(
+                    vec![SendSource::Path(path)],
+                    vec![address],
+                    &preparation,
+                    &|_, _| {},
+                )
+            })
+            .await??;
+            transfer::send(task, tx, 1, receiver).await?;
             let seconds = start.elapsed().as_secs_f64();
             println!(
                 "bytes={size} confirmed_seconds={seconds:.3} MiB/s={:.3}",

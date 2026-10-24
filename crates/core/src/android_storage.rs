@@ -83,51 +83,6 @@ pub fn pick_directory() -> io::Result<()> {
     })
 }
 
-pub fn begin(uri: &str, name: &str) -> io::Result<i64> {
-    activity(|env, object| {
-        let uri = env.new_string(uri)?;
-        let name = env.new_string(name)?;
-        env.call_method(
-            object,
-            "beginReceiveDocument",
-            "(Ljava/lang/String;Ljava/lang/String;)J",
-            &[JValue::Object(&uri), JValue::Object(&name)],
-        )?
-        .j()
-    })
-}
-
-pub fn duplicate_fd(token: i64) -> io::Result<i32> {
-    activity(|env, object| {
-        env.call_method(object, "receiveDocumentFd", "(J)I", &[JValue::Long(token)])?
-            .i()
-    })
-}
-
-pub fn finish(token: i64) -> io::Result<()> {
-    activity(|env, object| {
-        env.call_method(
-            object,
-            "finishReceiveDocument",
-            "(J)V",
-            &[JValue::Long(token)],
-        )?;
-        Ok(())
-    })
-}
-
-pub fn abort(token: i64) -> io::Result<()> {
-    activity(|env, object| {
-        env.call_method(
-            object,
-            "abortReceiveDocument",
-            "(J)V",
-            &[JValue::Long(token)],
-        )?;
-        Ok(())
-    })
-}
-
 pub fn publish_transfer(tree: &str, path: &str, name: &str, id: &str) -> io::Result<String> {
     activity(|env, object| {
         let tree = env.new_string(tree)?;

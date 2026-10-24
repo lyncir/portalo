@@ -1,8 +1,8 @@
 use std::{future::Future, net::SocketAddr, time::Duration};
 use tokio::{net::TcpStream, time::timeout};
 
-// PORTALO1 has no receiver-ready handshake. Concurrent connects to different
-// interfaces of the same peer can consume its receive slots, so try serially.
+// Concurrent connects to different interfaces of the same peer can consume
+// its receive slots before negotiation, so try addresses serially.
 pub(super) async fn connect(addresses: Vec<SocketAddr>) -> anyhow::Result<(TcpStream, SocketAddr)> {
     sequential(addresses, |address| async move {
         TcpStream::connect(address).await

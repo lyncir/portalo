@@ -1,9 +1,12 @@
 //! Linux/Android payload transport. Disk syscalls stay on the blocking pool;
-//! sockets remain nonblocking. Both fast paths fall back at the exact offset.
+//! sockets remain nonblocking. Sending falls back at the exact offset.
+//! The receive helper is test-only, for standalone kernel-copy regression tests.
+#[cfg(test)]
+use std::os::fd::FromRawFd;
 use std::{
     fs::File,
     io::{self, Read, Write},
-    os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
+    os::fd::{AsFd, AsRawFd, OwnedFd},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -17,6 +20,7 @@ const CHUNK: usize = 1024 * 1024;
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Direction {
     Send,
+    #[cfg(test)]
     Receive,
 }
 
@@ -162,6 +166,7 @@ fn unsupported(error: &io::Error) -> bool {
     )
 }
 
+#[cfg(test)]
 fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [-1; 2];
     // SAFETY: pipe2 writes exactly two descriptors. CLOEXEC prevents leaking
@@ -263,6 +268,7 @@ fn send(
     Ok(())
 }
 
+#[cfg(test)]
 fn write_file(file: &mut File, data: &[u8], control: &mut Control) -> io::Result<()> {
     let mut offset = 0;
     while offset < data.len() {
@@ -283,6 +289,7 @@ fn write_file(file: &mut File, data: &[u8], control: &mut Control) -> io::Result
     Ok(())
 }
 
+#[cfg(test)]
 fn receive(
     socket: &mut std::net::TcpStream,
     file: &mut File,
@@ -411,6 +418,7 @@ fn receive(
     Ok(())
 }
 
+#[cfg(test)]
 fn incomplete(remaining: u64) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::UnexpectedEof,
@@ -430,6 +438,7 @@ pub(super) async fn copy(
     let file = file.try_clone().await?.into_std().await;
     let directional = match direction {
         Direction::Send => "PORTALO_DISABLE_SENDFILE",
+        #[cfg(test)]
         Direction::Receive => "PORTALO_DISABLE_SPLICE",
     };
     let fast = std::env::var_os("PORTALO_DISABLE_ZERO_COPY").is_none()
@@ -463,6 +472,7 @@ async fn run(
         let mut socket = std::net::TcpStream::from(socket);
         let result = match direction {
             Direction::Send => send(&mut socket, &mut file, size, &mut control, fast),
+            #[cfg(test)]
             Direction::Receive => receive(&mut socket, &mut file, size, &mut control, fast),
         };
         bevy::log::debug!(
